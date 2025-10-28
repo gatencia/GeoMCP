@@ -1,22 +1,30 @@
-# server.py
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import List
 import io
 import numpy as np
 from PIL import Image
-from modules.elevation import (
-    get_elevation, 
-    get_elevation_raw, 
-    compute_hillshade_from_tiff,
-    compute_slope_vector_field
-)
 
-from modules.status import get_status
+# --- Modules ---
 from modules.sentinel_hub import process_png, NDVI_PNG_EVALSCRIPT
+from modules.elevation import (
+    get_elevation,
+    get_elevation_raw,
+    compute_hillshade_from_tiff,
+    compute_slope_vector_field,
+    slope_tiff_from_dem_tiff,
+    aspect_tiff_from_dem_tiff,
+    slope_png_from_dem_tiff,
+    slope_aspect_at_point,
+    flow_accum_png_from_dem_tiff,
+    flow_accum_tiff_from_dem_tiff,
+)
+from modules.ndwi import get_ndwi
+from modules.status import get_status
 
 
 app = FastAPI(title="GeoMCP - Satellite MCP Server")
+
 
 @app.get("/health")
 def health():
@@ -153,3 +161,30 @@ def elevation_vectors(bbox: str, width: int = 512, height: int = 512, step: int 
         return StreamingResponse(io.BytesIO(vector_png), media_type="image/png")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/flow/accumulation.png")
+def flow_accumulation_png(bbox: str, width: int = 512, height: int = 512):
+    """
+    Returns log-scaled flow accumulation map as PNG (brighter = higher flow).
+    """
+    bb = [float(x) for x in bbox.split(",")]
+    dem = get_elevation_raw(bb, width, height)
+    img_bytes = flow_accum_png_from_dem_tiff(dem)
+    return StreamingResponse(io.BytesIO(img_bytes), media_type="image/png")
+
+@app.get("/flow/accumulation.tif")
+def flow_accumulation_tif(bbox: str, width: int = 512, height: int = 512):
+    """
+    Returns raw flow accumulation (float32) as GeoTIFF.
+    """
+    bb = [float(x) for x in bbox.split(",")]
+    dem = get_elevation_raw(bb, width, height)
+    data = flow_accum_tiff_from_dem_tiff(dem)
+    return StreamingResponse(io.BytesIO(data), media_type="image/tiff")
+
+@app.get("/ndwi.png")
+def ndwi_png(bbox: str, width: int = 512, height: int = 512):
+    bb = [float(x) for x in bbox.split(",")]
+    img = get_ndwi(bb, width, height)
+    return StreamingResponse(io.BytesIO(img), media_type="image/png")

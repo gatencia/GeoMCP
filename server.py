@@ -4,6 +4,14 @@ from typing import List
 import io
 import numpy as np
 from PIL import Image
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
+
+from modules.zonal import (
+    zonal_stats_index,
+    point_series_index,
+    area_series_index,
+)
 
 # Core NDVI util (unchanged)
 from modules.sentinel_hub import process_png, NDVI_PNG_EVALSCRIPT
@@ -68,7 +76,78 @@ from modules.status import get_status
 
 app = FastAPI(title="GeoMCP - Satellite MCP Server")
 
+# --- Add to server.py (helpers for zonal parsers) ----------------------------
+from fastapi import Request
+from typing import Dict, Any, Optional, List
+import json
 
+_ALLOWED_INDICES = {"NDVI", "NDWI", "NDBI"}
+
+def _coerce_bbox(x: Any) -> Optional[List[float]]:
+    if x is None:
+        return None
+    if isinstance(x, (list, tuple)) and len(x) == 4:
+        return [float(v) for v in x]
+    if isinstance(x, str):
+        # accept "minLon,minLat,maxLon,maxLat"
+        parts = [p.strip() for p in x.split(",")]
+        if len(parts) == 4:
+            return [float(v) for v in parts]
+    raise ValueError("bbox must be [minLon,minLat,maxLon,maxLat] or 'minLon,minLat,maxLon,maxLat'")
+
+def _ensure_iso8601_day(s: str, end=False) -> str:
+    # accept YYYY-MM-DD and expand to full ISO-8601Z
+    if "T" in s:
+        return s
+    return f"{s}T23:59:59Z" if end else f"{s}T00:00:00Z"
+
+def _parse_zonal_body(body: Dict[str, Any]) -> Dict[str, Any]:
+    # tolerate from/to aliases
+    if "from_date" not in body and "from" in body:
+        body["from_date"] = body.pop("from")
+    if "to_date" not in body and "to" in body:
+        body["to_date"] = body.pop("to")
+
+    # required
+    missing = [k for k in ("index", "from_date", "to_date") if k not in body]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing required field(s): {', '.join(missing)}")
+
+    # normalize index
+    idx = str(body["index"]).upper()
+    if idx not in _ALLOWED_INDICES:
+        raise HTTPException(status_code=400, detail=f"index must be one of {sorted(_ALLOWED_INDICES)}")
+    body["index"] = idx
+
+    # exactly one of geometry or bbox
+    geom = body.get("geometry")
+    bbox  = body.get("bbox")
+    if (geom is None and bbox is None) or (geom is not None and bbox is not None):
+        raise HTTPException(status_code=400, detail="Provide exactly one of 'geometry' OR 'bbox'")
+
+    # coerce bbox if present
+    if bbox is not None:
+        try:
+            body["bbox"] = _coerce_bbox(bbox)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    # dims
+    body["width"]  = int(body.get("width", 256))
+    body["height"] = int(body.get("height", 256))
+    if body["width"] <= 0 or body["height"] <= 0:
+        raise HTTPException(status_code=400, detail="width/height must be positive integers")
+
+    # cloud mask optional
+    body["cloud_mask"] = bool(body.get("cloud_mask", True))
+
+    # dates → full ISO
+    body["from_date"] = _ensure_iso8601_day(str(body["from_date"]), end=False)
+    body["to_date"]   = _ensure_iso8601_day(str(body["to_date"]),   end=True)
+
+    return body
+
+    
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -781,5 +860,102 @@ def cloudfree_ndwi_png(
         if opaque:
             png_bytes = _strip_alpha(png_bytes)
         return StreamingResponse(io.BytesIO(png_bytes), media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ZonalStatsBody(BaseModel):
+    index: str                          # "NDVI" | "NDWI" | "NDBI" | "NDMI" | "EVI" | "RAW:B08" ...
+    from_date: str
+    to_date: str
+    width: int = 256
+    height: int = 256
+    cloud_mask: bool = True
+    bbox: Optional[List[float]] = None  # [minLon,minLat,maxLon,maxLat]
+    geometry: Optional[Dict[str, Any]] = None  # GeoJSON geometry
+
+class PointSeriesQuery(BaseModel):
+    index: str
+    lat: float
+    lon: float
+    from_date: str
+    to_date: str
+    step_days: int = 10
+    buffer_m: float = 20.0
+    cloud_mask: bool = True
+
+class AreaSeriesBody(BaseModel):
+    index: str
+    from_date: str
+    to_date: str
+    step_days: int = 10
+    width: int = 256
+    height: int = 256
+    cloud_mask: bool = True
+    bbox: Optional[List[float]] = None
+    geometry: Optional[Dict[str, Any]] = None
+
+
+
+@app.post("/zonal_stats.json")
+def post_zonal_stats(body: ZonalStatsBody):
+    """
+    Zonal statistics for an index over a bbox or GeoJSON geometry.
+    Returns { index, from, to, width, height, stats{...} }.
+    """
+    if (body.bbox is None) and (body.geometry is None):
+        raise HTTPException(status_code=400, detail="Provide either 'bbox' or 'geometry'.")
+
+    try:
+        out = zonal_stats_index(
+            index=body.index,
+            from_iso=body.from_date,
+            to_iso=body.to_date,
+            width=body.width,
+            height=body.height,
+            bbox=body.bbox,
+            geometry=body.geometry,
+            cloud_mask=body.cloud_mask,
+        )
+        return JSONResponse(out)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/series/point.json")
+def post_series_point(body: PointSeriesQuery):
+    """
+    Point time-series for an index (lat/lon). Splits [from,to] into step_days bins.
+    """
+    try:
+        out = point_series_index(
+            index=body.index,
+            lat=body.lat, lon=body.lon,
+            from_iso=body.from_date, to_iso=body.to_date,
+            step_days=body.step_days, buffer_m=body.buffer_m,
+            cloud_mask=body.cloud_mask,
+        )
+        return JSONResponse(out)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/series/area.json")
+def post_series_area(body: AreaSeriesBody):
+    """
+    Area (bbox/geometry) time-series for an index. Each bin returns zonal stats.
+    """
+    if (body.bbox is None) and (body.geometry is None):
+        raise HTTPException(status_code=400, detail="Provide either 'bbox' or 'geometry'.")
+
+    try:
+        out = area_series_index(
+            index=body.index,
+            from_iso=body.from_date, to_iso=body.to_date,
+            step_days=body.step_days,
+            width=body.width, height=body.height,
+            bbox=body.bbox, geometry=body.geometry,
+            cloud_mask=body.cloud_mask,
+        )
+        return JSONResponse(out)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

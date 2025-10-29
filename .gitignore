@@ -21,6 +21,13 @@ env/
 *.swp
 *.swo
 
+
+#Documentation
+Documentation/
+
+#Modules
+modules/
+
 # OS
 .DS_Store
 Thumbs.db

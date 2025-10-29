@@ -28,3 +28,13 @@ Thumbs.db
 # Environment variables
 .env
 *.env
+
+# Output files (satellite analysis results)
+*.png
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.gif
+outputs/
+results/

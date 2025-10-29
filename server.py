@@ -11,6 +11,12 @@ from typing import List, Dict
 
 from pydantic import BaseModel, Field
 
+from modules.cloudfree import (
+    get_cloudfree_truecolor_png,
+    get_cloudfree_ndvi_png,
+    get_cloudfree_ndwi_png,
+)
+
 from modules.classification import (
     get_rule_based_png,
     get_rule_based_tiff,
@@ -676,5 +682,104 @@ def classify_supervised_matrix(body: SupervisedBody):
             training_points=body.training_points,
         )
         return JSONResponse(mat)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+import io
+from PIL import Image
+
+def _strip_alpha(png_bytes: bytes) -> bytes:
+    """Flatten any RGBA/LA image to opaque RGB/8-bit grayscale."""
+    bio = io.BytesIO(png_bytes)
+    im = Image.open(bio)
+    if im.mode in ("RGBA", "LA"):
+        # For color images, composite on black (or change to white if you prefer)
+        if im.mode == "RGBA":
+            bg = Image.new("RGB", im.size, (0, 0, 0))
+            bg.paste(im, mask=im.split()[-1])
+            out = io.BytesIO()
+            bg.save(out, format="PNG")
+            return out.getvalue()
+        # For grayscale+alpha
+        if im.mode == "LA":
+            g, a = im.split()
+            # Make it opaque grayscale by ignoring alpha
+            out = io.BytesIO()
+            g.save(out, format="PNG")
+            return out.getvalue()
+    return png_bytes
+
+    # ------------------------------------------------------------------
+# Cloud-free TRUE COLOR (opaque toggle)
+# ------------------------------------------------------------------
+@app.get("/cloudfree/truecolor.png")
+def cloudfree_truecolor_png(
+    bbox: str,
+    from_date: str = Query(..., alias="from"),
+    to_date: str   = Query(..., alias="to"),
+    maxcc: int = 30,
+    width: int = 512,
+    height: int = 512,
+    opaque: bool = False,   # <— NEW
+):
+    try:
+        bb = _parse_bbox(bbox)
+        png_bytes = get_cloudfree_truecolor_png(
+            bb, from_date, to_date, maxcc=maxcc, width=width, height=height
+        )
+        if opaque:
+            png_bytes = _strip_alpha(png_bytes)
+        return StreamingResponse(io.BytesIO(png_bytes), media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ------------------------------------------------------------------
+# Cloud-free NDVI (opaque toggle)
+# ------------------------------------------------------------------
+@app.get("/cloudfree/ndvi.png")
+def cloudfree_ndvi_png(
+    bbox: str,
+    from_date: str = Query(..., alias="from"),
+    to_date: str   = Query(..., alias="to"),
+    maxcc: int = 30,
+    width: int = 512,
+    height: int = 512,
+    opaque: bool = False,   # <— NEW
+):
+    try:
+        bb = _parse_bbox(bbox)
+        png_bytes = get_cloudfree_ndvi_png(
+            bb, from_date, to_date, maxcc=maxcc, width=width, height=height
+        )
+        if opaque:
+            png_bytes = _strip_alpha(png_bytes)
+        return StreamingResponse(io.BytesIO(png_bytes), media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ------------------------------------------------------------------
+# Cloud-free NDWI (opaque toggle)
+# ------------------------------------------------------------------
+@app.get("/cloudfree/ndwi.png")
+def cloudfree_ndwi_png(
+    bbox: str,
+    from_date: str = Query(..., alias="from"),
+    to_date: str   = Query(..., alias="to"),
+    maxcc: int = 30,
+    width: int = 512,
+    height: int = 512,
+    opaque: bool = False,   # <— NEW
+):
+    try:
+        bb = _parse_bbox(bbox)
+        png_bytes = get_cloudfree_ndwi_png(
+            bb, from_date, to_date, maxcc=maxcc, width=width, height=height
+        )
+        if opaque:
+            png_bytes = _strip_alpha(png_bytes)
+        return StreamingResponse(io.BytesIO(png_bytes), media_type="image/png")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

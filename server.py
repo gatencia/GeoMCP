@@ -8,6 +8,28 @@ from PIL import Image
 # Core NDVI util (unchanged)
 from modules.sentinel_hub import process_png, NDVI_PNG_EVALSCRIPT
 
+
+from pydantic import BaseModel, Field
+
+from modules.classification import (
+    get_rule_based_png,
+    get_rule_based_tiff,
+    get_rule_based_matrix,
+    get_unsupervised_png,
+    get_unsupervised_tiff,
+    get_unsupervised_matrix,
+    get_supervised_png,
+    get_supervised_tiff,
+    get_supervised_matrix,
+)
+
+# Urban areas and exploration
+from modules.ndbi import (
+    get_ndbi_png,
+    get_ndbi_tiff,
+    get_ndbi_matrix,
+)
+
 # Elevation + derivatives (now with PNG / TIFF / MATRIX helpers)
 from modules.elevation import (
     get_elevation,
@@ -446,5 +468,205 @@ def slope_matrix(bbox: str, width: int = 256, height: int = 256):
         dem = get_elevation_raw(bb, width, height)
         payload = slope_matrix_from_dem_tiff(dem, bbox=bb, width=width, height=height)
         return JSONResponse(payload)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@app.get("/ndbi.png")
+def ndbi_png(
+    bbox: str,
+    width: int = 512,
+    height: int = 512,
+    from_date: str | None = Query(None, alias="from"),
+    to_date: str | None = Query(None, alias="to"),
+):
+    """
+    PNG visualization of NDBI. If `from`/`to` are provided (ISO 8601), uses that time window.
+    Otherwise uses mostRecent mosaic.
+    """
+    try:
+        bb = _parse_bbox(bbox)
+        img = get_ndbi_png(bb, width=width, height=height, from_iso=from_date, to_iso=to_date)
+        return StreamingResponse(io.BytesIO(img), media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/ndbi.tif")
+def ndbi_tif(
+    bbox: str,
+    width: int = 512,
+    height: int = 512,
+    from_date: str | None = Query(None, alias="from"),
+    to_date: str | None = Query(None, alias="to"),
+):
+    """Float32 GeoTIFF of NDBI."""
+    try:
+        bb = _parse_bbox(bbox)
+        data = get_ndbi_tiff(bb, width=width, height=height, from_iso=from_date, to_iso=to_date)
+        return StreamingResponse(io.BytesIO(data), media_type="image/tiff")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/ndbi.matrix")
+def ndbi_matrix(
+    bbox: str,
+    width: int = 256,
+    height: int = 256,
+    from_date: str | None = Query(None, alias="from"),
+    to_date: str | None = Query(None, alias="to"),
+):
+    """JSON float matrix of NDBI values."""
+    try:
+        bb = _parse_bbox(bbox)
+        payload = get_ndbi_matrix(bb, width=width, height=height, from_iso=from_date, to_iso=to_date)
+        return JSONResponse(payload)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/classify/rule_based.png")
+def classify_rule_based_png(
+    bbox: str,
+    from_date: str = Query(..., alias="from"),
+    to_date: str = Query(..., alias="to"),
+    width: int = 256,
+    height: int = 256,
+):
+    try:
+        bb = _parse_bbox(bbox)
+        img = get_rule_based_png(bbox=bb, from_iso=from_date, to_iso=to_date, width=width, height=height)
+        return StreamingResponse(io.BytesIO(img), media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/classify/rule_based.tif")
+def classify_rule_based_tif(
+    bbox: str,
+    from_date: str = Query(..., alias="from"),
+    to_date: str = Query(..., alias="to"),
+    width: int = 256,
+    height: int = 256,
+):
+    try:
+        bb = _parse_bbox(bbox)
+        tif = get_rule_based_tiff(bbox=bb, from_iso=from_date, to_iso=to_date, width=width, height=height)
+        return StreamingResponse(io.BytesIO(tif), media_type="image/tiff")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/classify/rule_based.matrix")
+def classify_rule_based_matrix(
+    bbox: str,
+    from_date: str = Query(..., alias="from"),
+    to_date: str = Query(..., alias="to"),
+    width: int = 256,
+    height: int = 256,
+):
+    try:
+        bb = _parse_bbox(bbox)
+        mat = get_rule_based_matrix(bbox=bb, from_iso=from_date, to_iso=to_date, width=width, height=height)
+        return JSONResponse(mat)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/classify/unsupervised.png")
+def classify_unsupervised_png(
+    bbox: str,
+    from_date: str = Query(..., alias="from"),
+    to_date: str = Query(..., alias="to"),
+    k: int = 6,
+    width: int = 256,
+    height: int = 256,
+):
+    try:
+        bb = _parse_bbox(bbox)
+        img = get_unsupervised_png(bbox=bb, from_iso=from_date, to_iso=to_date, width=width, height=height, k=k)
+        return StreamingResponse(io.BytesIO(img), media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/classify/unsupervised.tif")
+def classify_unsupervised_tif(
+    bbox: str,
+    from_date: str = Query(..., alias="from"),
+    to_date: str = Query(..., alias="to"),
+    k: int = 6,
+    width: int = 256,
+    height: int = 256,
+):
+    try:
+        bb = _parse_bbox(bbox)
+        tif = get_unsupervised_tiff(bbox=bb, from_iso=from_date, to_iso=to_date, width=width, height=height, k=k)
+        return StreamingResponse(io.BytesIO(tif), media_type="image/tiff")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/classify/unsupervised.matrix")
+def classify_unsupervised_matrix(
+    bbox: str,
+    from_date: str = Query(..., alias="from"),
+    to_date: str = Query(..., alias="to"),
+    k: int = 6,
+    width: int = 256,
+    height: int = 256,
+):
+    try:
+        bb = _parse_bbox(bbox)
+        mat = get_unsupervised_matrix(bbox=bb, from_iso=from_date, to_iso=to_date, width=width, height=height, k=k)
+        return JSONResponse(mat)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/classify/supervised.png")
+def classify_supervised_png(body: SupervisedBody):
+    try:
+        img = get_supervised_png(
+            bbox=body.bbox,
+            from_iso=body.from_,
+            to_iso=body.to,
+            width=body.width,
+            height=body.height,
+            training_points=body.training_points,
+        )
+        return StreamingResponse(io.BytesIO(img), media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/classify/supervised.tif")
+def classify_supervised_tif(body: SupervisedBody):
+    try:
+        tif = get_supervised_tiff(
+            bbox=body.bbox,
+            from_iso=body.from_,
+            to_iso=body.to,
+            width=body.width,
+            height=body.height,
+            training_points=body.training_points,
+        )
+        return StreamingResponse(io.BytesIO(tif), media_type="image/tiff")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/classify/supervised.matrix")
+def classify_supervised_matrix(body: SupervisedBody):
+    try:
+        mat = get_supervised_matrix(
+            bbox=body.bbox,
+            from_iso=body.from_,
+            to_iso=body.to,
+            width=body.width,
+            height=body.height,
+            training_points=body.training_points,
+        )
+        return JSONResponse(mat)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

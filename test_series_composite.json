@@ -1,0 +1,19 @@
+{
+  "index": "NDVI",
+  "from_date": "2024-06-01",
+  "to_date": "2024-07-30",
+  "bbox": [
+    11.755,
+    -0.084,
+    11.765,
+    -0.074
+  ],
+  "width": 256,
+  "height": 256,
+  "step_days": 10,
+  "cloud_mask": true,
+  "composite": true,
+  "y": "median",
+  "chart_width": 1000,
+  "chart_height": 450
+}

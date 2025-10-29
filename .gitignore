@@ -45,3 +45,11 @@ Thumbs.db
 *.gif
 outputs/
 results/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+Tests/report.html
+Tests/__pycache__/
+*.pyc

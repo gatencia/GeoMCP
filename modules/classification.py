@@ -88,10 +88,12 @@ def _fetch_s2_stack_float32(
     """
     headers = {"Authorization": f"Bearer {_get_token()}"}
 
+    # Ensure full ISO-8601 timestamps
     from_iso = _ensure_iso8601(from_iso, end=False)
     to_iso   = _ensure_iso8601(to_iso, end=True)
 
-    band_list = ", ".join(bands)
+    # IMPORTANT: bands in evalscript 'input' must be quoted strings
+    band_list = ", ".join([f'"{b}"' for b in bands])
     nb = len(bands) + 1  # + dataMask
 
     evalscript = f"""
@@ -137,15 +139,16 @@ def _fetch_s2_stack_float32(
         arr = arr[..., None]
     return arr
 
+
 def _lonlat_to_rc(
     bbox: List[float], width: int, height: int, lat: float, lon: float
 ) -> Tuple[int, int]:
-    """Convert lon/lat to row/col indices (nearest pixel)."""
+    """Convert lon/lat to row/col indices (nearest pixel), with top = maxLat."""
     minLon, minLat, maxLon, maxLat = bbox
-    col = int(round((lon - minLon) / (maxLon - minLon) * (width - 1)))
-    row = int(round((lat - minLat) / (maxLat - minLat) * (height - 1)))
+    col = int(round((lon - minLon) / max(maxLon - minLon, 1e-9) * (width  - 1)))
+    row = int(round((maxLat - lat) / max(maxLat - minLat, 1e-9) * (height - 1)))
     row = int(np.clip(row, 0, height - 1))
-    col = int(np.clip(col, 0, width - 1))
+    col = int(np.clip(col, 0, width  - 1))
     return row, col
 
 def _mask_invalid(data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -285,26 +288,48 @@ def get_unsupervised_matrix(**kwargs) -> Dict:
 
 # ----------------------- Supervised (RF / KNN) -------------------------------
 
+
+def _nearest_valid_pixel(valid_mask: np.ndarray, r: int, c: int, max_radius: int = 3):
+    H, W = valid_mask.shape
+    if valid_mask[r, c]:
+        return r, c
+    for rad in range(1, max_radius + 1):
+        r0 = max(0, r - rad); r1 = min(H - 1, r + rad)
+        c0 = max(0, c - rad); c1 = min(W - 1, c + rad)
+        # top/bottom rows
+        for cc in range(c0, c1 + 1):
+            if valid_mask[r0, cc]: return r0, cc
+            if valid_mask[r1, cc]: return r1, cc
+        # left/right cols
+        for rr in range(r0 + 1, r1):
+            if valid_mask[rr, c0]: return rr, c0
+            if valid_mask[rr, c1]: return rr, c1
+    return None
+
+
 def _collect_training_samples(
     feats: np.ndarray, valid: np.ndarray, bbox: List[float], width: int, height: int,
     training_points: List[Dict[str, float]],
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Extract training (X,y) from labeled points.
+    Extract training (X,y) from labeled points; snaps to nearest valid pixel within a small radius.
     training_points: [{"lat":..., "lon":..., "label": int}, ...]
     """
-    X_list = []
-    y_list = []
+    X_list, y_list = [], []
     for p in training_points:
         lat = float(p["lat"]); lon = float(p["lon"]); lbl = int(p["label"])
         r, c = _lonlat_to_rc(bbox, width, height, lat, lon)
-        if not valid[r, c]:
-            # Skip masked pixel
+        hit = _nearest_valid_pixel(valid, r, c, max_radius=3)
+        if hit is None:
             continue
-        X_list.append(feats[r, c])
+        rr, cc = hit
+        X_list.append(feats[rr, cc])
         y_list.append(lbl)
     if not X_list:
-        raise ValueError("No valid training samples intersect the image. Check points/bbox/time window.")
+        raise ValueError(
+            "No valid training samples intersect the image (even after neighborhood search). "
+            "Try expanding the date window, adjusting bbox, or using different points."
+        )
     X = np.stack(X_list, axis=0).astype(np.float32)
     y = np.array(y_list, dtype=np.int16)
     return X, y

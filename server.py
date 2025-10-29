@@ -7,7 +7,7 @@ from PIL import Image
 
 # Core NDVI util (unchanged)
 from modules.sentinel_hub import process_png, NDVI_PNG_EVALSCRIPT
-
+from typing import List, Dict
 
 from pydantic import BaseModel, Field
 
@@ -525,6 +525,14 @@ def ndbi_matrix(
         return JSONResponse(payload)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+class SupervisedBody(BaseModel):
+    bbox: List[float]
+    from_: str = Field(..., alias="from")
+    to: str = Field(..., alias="to")
+    width: int = 256
+    height: int = 256
+    training_points: List[Dict]  # [{ "lat": float, "lon": float, "label": int }, ...]
 
 
 @app.get("/classify/rule_based.png")

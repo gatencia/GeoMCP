@@ -234,18 +234,6 @@ uvicorn server:app --reload --host 0.0.0.0 --port 8000
 curl http://localhost:8000/health
 ```
 
-## Contributing
-
-Contributions welcome! Areas of focus:
-- Implementing functions from the roadmap (see `Documentation/Future Layers.md`)
-- Performance optimization for large rasters
-- Additional satellite data sources (Landsat, MODIS, etc.)
-- Caching and preprocessing pipelines
-- Unit tests and integration tests
-
-## License
-
-[Add your license here]
 
 ## Acknowledgments
 
@@ -255,4 +243,4 @@ Contributions welcome! Areas of focus:
 
 ## Contact
 
-[Add your contact information]
+edin.com/in/guillaume-atencia-2786b8252/

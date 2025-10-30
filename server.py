@@ -55,6 +55,7 @@ from modules.ndbi import (
 from modules.elevation import (
     get_elevation,
     get_elevation_raw,
+    get_elevation_matrix,  # Added import
     # Hillshade
     hillshade_png_from_dem_tiff,
     hillshade_tiff_from_dem_tiff,
@@ -261,8 +262,6 @@ def elevation_raw(bbox: str, width: int = 512, height: int = 512):
     data = get_elevation_raw(bb, width, height)
     return StreamingResponse(io.BytesIO(data), media_type="image/tiff")
 
-
-
 @app.get("/elevation/gradient")
 def elevation_gradient(bbox: str, width: int = 512, height: int = 512):
     """
@@ -271,15 +270,13 @@ def elevation_gradient(bbox: str, width: int = 512, height: int = 512):
     try:
         bb = [float(x.strip()) for x in bbox.split(",")]
         raw_tiff = get_elevation_raw(bb, width, height)
-        hillshade_png = compute_hillshade_from_tiff(raw_tiff)
+        hillshade_png = hillshade_png_from_dem_tiff(raw_tiff)
         return StreamingResponse(io.BytesIO(hillshade_png), media_type="image/png")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
-@app.get("/elevation/vectors")
-def elevation_vectors(bbox: str, width: int = 512, height: int = 512, step: int = 20):
+@app.get("/elevation/vectors_legacy")
+def elevation_vectors_legacy(bbox: str, width: int = 512, height: int = 512, step: int = 20):
     """
     Returns slope vector field overlay (arrows show direction & steepness).
     """
@@ -297,45 +294,64 @@ def flow_accumulation_png(bbox: str, width: int = 512, height: int = 512):
     """
     Returns log-scaled flow accumulation map as PNG (brighter = higher flow).
     """
-    bb = [float(x) for x in bbox.split(",")]
-    dem = get_elevation_raw(bb, width, height)
-    img_bytes = flow_accum_png_from_dem_tiff(dem)
-    return StreamingResponse(io.BytesIO(img_bytes), media_type="image/png")
+    try:
+        bb = _parse_bbox(bbox)
+        dem = get_elevation_raw(bb, width, height)
+        img = flow_accum_png_from_dem_tiff(dem)
+        return StreamingResponse(io.BytesIO(img), media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/flow/accumulation.tif")
 def flow_accumulation_tif(bbox: str, width: int = 512, height: int = 512):
     """
     Returns raw flow accumulation (float32) as GeoTIFF.
     """
-    bb = [float(x) for x in bbox.split(",")]
-    dem = get_elevation_raw(bb, width, height)
-    data = flow_accum_tiff_from_dem_tiff(dem)
-    return StreamingResponse(io.BytesIO(data), media_type="image/tiff")
+    try:
+        bb = _parse_bbox(bbox)
+        dem = get_elevation_raw(bb, width, height)
+        data = flow_accum_tiff_from_dem_tiff(dem)
+        return StreamingResponse(io.BytesIO(data), media_type="image/tiff")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/ndwi.png")
 def ndwi_png(bbox: str, width: int = 512, height: int = 512):
-    bb = [float(x) for x in bbox.split(",")]
-    img = get_ndwi(bb, width, height)
-    return StreamingResponse(io.BytesIO(img), media_type="image/png")
+    try:
+        bb = _parse_bbox(bbox)
+        img = get_ndwi(bb, width, height)
+        return StreamingResponse(io.BytesIO(img), media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Elevation JSON
 @app.get("/elevation.matrix")
 def elevation_matrix(bbox: str, width: int = 256, height: int = 256):
-    bb = [float(x) for x in bbox.split(",")]
-    return JSONResponse(get_elevation_matrix(bb, width, height))
+    try:
+        bb = [float(x) for x in bbox.split(",")]
+        return JSONResponse(get_elevation_matrix(bb, width, height))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # NDWI TIFF & JSON
 @app.get("/ndwi.tif")
 def ndwi_tif(bbox: str, width: int = 512, height: int = 512):
-    bb = [float(x) for x in bbox.split(",")]
-    data = get_ndwi_raw(bb, width, height)
-    return StreamingResponse(io.BytesIO(data), media_type="image/tiff")
+    try:
+        bb = _parse_bbox(bbox)
+        data = get_ndwi_raw(bb, width, height)
+        return StreamingResponse(io.BytesIO(data), media_type="image/tiff")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/ndwi.matrix")
 def ndwi_matrix(bbox: str, width: int = 256, height: int = 256):
-    bb = [float(x) for x in bbox.split(",")]
-    return JSONResponse(get_ndwi_matrix(bb, width, height))
+    try:
+        bb = _parse_bbox(bbox)
+        payload = get_ndwi_matrix(bb, width, height)
+        return JSONResponse(payload)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/hillshade.png")
@@ -410,28 +426,6 @@ def aspect_matrix(bbox: str, width: int = 256, height: int = 256):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/flow/accumulation.png")
-def flow_accumulation_png(bbox: str, width: int = 512, height: int = 512):
-    try:
-        bb = _parse_bbox(bbox)
-        dem = get_elevation_raw(bb, width, height)
-        img = flow_accum_png_from_dem_tiff(dem)
-        return StreamingResponse(io.BytesIO(img), media_type="image/png")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/flow/accumulation.tif")
-def flow_accumulation_tif(bbox: str, width: int = 512, height: int = 512):
-    try:
-        bb = _parse_bbox(bbox)
-        dem = get_elevation_raw(bb, width, height)
-        data = flow_accum_tiff_from_dem_tiff(dem)
-        return StreamingResponse(io.BytesIO(data), media_type="image/tiff")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.get("/flow/accumulation.matrix")
 def flow_accumulation_matrix(bbox: str, width: int = 256, height: int = 256):
     try:
@@ -443,19 +437,6 @@ def flow_accumulation_matrix(bbox: str, width: int = 256, height: int = 256):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Keep your existing endpoint (PNG) for backward compatibility
-@app.get("/elevation/vectors")
-def elevation_vectors_legacy(bbox: str, width: int = 512, height: int = 512, step: int = 20):
-    try:
-        bb = _parse_bbox(bbox)
-        dem = get_elevation_raw(bb, width, height)
-        img = compute_slope_vector_field(dem, step=step)
-        return StreamingResponse(io.BytesIO(img), media_type="image/png")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# New explicit PNG route
 @app.get("/elevation/vectors.png")
 def elevation_vectors_png(bbox: str, width: int = 512, height: int = 512, step: int = 20):
     try:
@@ -484,35 +465,6 @@ def elevation_vectors_matrix(bbox: str, width: int = 512, height: int = 512, ste
         bb = _parse_bbox(bbox)
         dem = get_elevation_raw(bb, width, height)
         payload = slope_vector_field_matrix(dem, step=step)  # {"U":[[...]], "V":[[...]]}
-        return JSONResponse(payload)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/ndwi.png")
-def ndwi_png(bbox: str, width: int = 512, height: int = 512):
-    try:
-        bb = _parse_bbox(bbox)
-        img = get_ndwi(bb, width, height)
-        return StreamingResponse(io.BytesIO(img), media_type="image/png")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/ndwi.tif")
-def ndwi_tif(bbox: str, width: int = 512, height: int = 512):
-    try:
-        bb = _parse_bbox(bbox)
-        data = get_ndwi_raw(bb, width, height)
-        return StreamingResponse(io.BytesIO(data), media_type="image/tiff")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/ndwi.matrix")
-def ndwi_matrix(bbox: str, width: int = 256, height: int = 256):
-    try:
-        bb = _parse_bbox(bbox)
-        payload = get_ndwi_matrix(bb, width, height)
         return JSONResponse(payload)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1107,6 +1059,7 @@ async def zonal_timeseries_json(request: Request):
 
 import zipfile
 import tempfile
+import tifffile
 @app.post("/zonal_stats.tif")
 async def zonal_stats_tif(request: Request):
     """
@@ -1127,7 +1080,6 @@ async def zonal_stats_tif(request: Request):
             cloud_mask=body["cloud_mask"],
         )
 
-        import tifffile, io
         buf = io.BytesIO()
         tifffile.imwrite(buf, np.dstack([val, mask]).astype(np.float32))
         buf.seek(0)
@@ -1262,7 +1214,6 @@ async def zonal_timeseries_zip(request: Request):
                         geometry=body.get("geometry"),
                         cloud_mask=body["cloud_mask"],
                     )
-                    import tifffile
                     tifbuf = io.BytesIO()
                     tifffile.imwrite(tifbuf, np.dstack([val, mask]).astype(np.float32))
                     zf.writestr(
@@ -1651,7 +1602,6 @@ def post_series_point_png(body: PointSeriesQuery):
 
 
 # --- ZONAL TIME-SERIES FRAMES (PNG ZIP) --------------------------------------
-# --- ZONAL TIME-SERIES FRAMES (PNG ZIP) --------------------------------------
 @app.post("/zonal_timeseries.frames.zip")
 async def zonal_timeseries_frames_zip(request: Request):
     import datetime as dt, zipfile, io as _io, traceback
@@ -1722,7 +1672,6 @@ async def zonal_timeseries_frames_zip(request: Request):
         headers={"Content-Disposition": "attachment; filename=zonal_timeseries_frames.zip"}
     )
 
-# --- CONTACT SHEET (grid) ----------------------------------------------------
 # --- CONTACT SHEET (grid) ----------------------------------------------------
 @app.post("/zonal_timeseries.contact_sheet.png")
 async def zonal_timeseries_contact_sheet_png(request: Request):

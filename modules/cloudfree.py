@@ -181,3 +181,24 @@ def get_cloudfree_ndwi_png(
         maxcc=maxcc,
         evalscript=NDWI_EVAL_PNG,
     )
+
+def truecolor_png(
+    bbox,
+    from_iso,
+    to_iso,
+    width=512,
+    height=512,
+    maxcc=20,
+):
+    """
+    Thin compat wrapper so MCP can call cloudfree.truecolor_png(...)
+    """
+    return truecolor_rgba_or_png(
+        bbox=bbox,
+        from_iso=from_iso,
+        to_iso=to_iso,
+        width=width,
+        height=height,
+        maxcc=maxcc,
+        fmt="png",
+    )

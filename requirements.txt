@@ -1,5 +1,5 @@
 fastapi
-uvicorn[standard]
+uvicorn[standard]>=0.38.0
 python-dotenv
 numpy
 Pillow
@@ -16,4 +16,3 @@ rich
 python-multipart
 httpx
 fastmcp
-websockets-sansio

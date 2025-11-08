@@ -8,6 +8,7 @@ discoverable and callable tools for LLM agents like Claude.
 """
 
 import base64
+from collections.abc import Mapping, Sequence
 from typing import Any, Dict, List, Optional
 
 from fastmcp import FastMCP
@@ -72,6 +73,60 @@ def _format_tiff_response(tiff_bytes: bytes, filename: str) -> Dict[str, Any]:
         "description": "GeoTIFF file with float32 data.",
     }
 
+
+async def _collect_tool_names() -> List[str]:
+    """Return sorted tool names from the FastMCP registry."""
+    registered = await mcp.get_tools()
+    names: List[str] = []
+
+    if isinstance(registered, Mapping):
+        names = [str(name) for name in registered.keys()]
+    elif isinstance(registered, str):
+        names = [registered]
+    elif isinstance(registered, Sequence):
+        for entry in registered:
+            if isinstance(entry, str):
+                names.append(entry)
+            elif hasattr(entry, "key"):
+                names.append(str(entry.key))
+            elif hasattr(entry, "name"):
+                names.append(str(entry.name))
+
+    return sorted(set(names))
+
+
+def _categorize_tools(tool_names: List[str]) -> Dict[str, List[str]]:
+    """Group tool names into high-level capability buckets."""
+    lowered = {name: name.lower() for name in tool_names}
+
+    def _filter_by_keywords(keywords: Sequence[str]) -> List[str]:
+        return sorted(
+            [
+                name
+                for name, lowered_name in lowered.items()
+                if any(keyword in lowered_name for keyword in keywords)
+            ]
+        )
+
+    capabilities: Dict[str, List[str]] = {
+        "indices": _filter_by_keywords(("ndvi", "ndwi", "ndbi")),
+        "composites": _filter_by_keywords(("cloudfree",)),
+        "terrain": _filter_by_keywords(("elevation", "slope", "aspect", "hillshade")),
+        "hydrology": _filter_by_keywords(("flow",)),
+        "classification": _filter_by_keywords(("classification",)),
+        "zonal_analysis": _filter_by_keywords(("zonal", "point_timeseries")),
+    }
+
+    core_tools = sorted(name for name in tool_names if name in {"health", "list_capabilities"})
+    capabilities["core"] = core_tools
+    return capabilities
+
+
+async def _build_capability_summary() -> Dict[str, List[str]]:
+    """Generate the capability summary used by status tools."""
+    tool_names = await _collect_tool_names()
+    return _categorize_tools(tool_names)
+
 # ---------------------------------------------------------------------------
 # Core & Status Tools
 # ---------------------------------------------------------------------------
@@ -90,30 +145,23 @@ async def health(force_http: bool = False) -> dict:
     http_status = await fetch_http_status(base_url=GEOMCP_BASE, force_http=force_http)
     local_sentinel_status = check_sentinel_token_local()
 
+    capabilities = await _build_capability_summary()
     return {
         "status": "ok" if http_status.get("status") == "ok" else "degraded",
         "local_sentinel_hub_auth": local_sentinel_status,
         "http_backend": http_status,
-        "mcp_capabilities": list_capabilities(),
+        "mcp_capabilities": capabilities,
     }
 
+
 @mcp.tool()
-def list_capabilities() -> dict:
+async def list_capabilities() -> dict:
     """
     Lists all available geospatial tools grouped by category.
 
     :return: A dictionary containing all tool names organized by function.
     """
-    all_tools = sorted(mcp.get_all_tool_names())
-    return {
-        "indices": [t for t in all_tools if "ndvi" in t or "ndwi" in t or "ndbi" in t],
-        "composites": [t for t in all_tools if "cloudfree" in t],
-        "terrain": [t for t in all_tools if "elevation" in t or "slope" in t or "aspect" in t or "hillshade" in t],
-        "hydrology": [t for t in all_tools if "flow" in t],
-        "classification": [t for t in all_tools if "classification" in t],
-        "zonal_analysis": [t for t in all_tools if "zonal" in t or "point" in t],
-        "core": ["health", "list_capabilities"],
-    }
+    return await _build_capability_summary()
 
 # ---------------------------------------------------------------------------
 # Sentinel / Indices Tools

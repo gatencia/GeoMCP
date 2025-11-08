@@ -8,10 +8,16 @@ discoverable and callable tools for LLM agents like Claude.
 """
 
 import base64
+import os
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
+import numpy as np
 from fastmcp import FastMCP
+from fastmcp.tools.tool import ToolResult
+from fastmcp.utilities.types import File
 
 from mcp_adapters import (
     GEOMCP_BASE,
@@ -51,6 +57,9 @@ from mcp_adapters import (
 # --- MCP Setup ---
 mcp = FastMCP("GeoMCP")
 
+_DEFAULT_MATRIX_DIR = Path(__file__).resolve().parent / "tmp" / "matrix_cache"
+MATRIX_STORAGE_DIR = Path(os.environ.get("GEOMCP_MATRIX_DIR", _DEFAULT_MATRIX_DIR))
+
 # ---------------------------------------------------------------------------
 # Helper for Image-Returning Tools
 # ---------------------------------------------------------------------------
@@ -72,6 +81,65 @@ def _format_tiff_response(tiff_bytes: bytes, filename: str) -> Dict[str, Any]:
         "filename": filename,
         "description": "GeoTIFF file with float32 data.",
     }
+
+
+def _detect_matrix_field(payload: Dict[str, Any]) -> tuple[str, list]:
+    """Identify the key that contains the primary matrix payload."""
+    candidate_keys = (
+        "matrix",
+        "values",
+        "elevation",
+        "slope",
+        "aspect",
+        "hillshade",
+        "accumulation_log",
+    )
+    for key in candidate_keys:
+        matrix = payload.get(key)
+        if isinstance(matrix, list) and matrix and isinstance(matrix[0], list):
+            return key, matrix
+    raise ValueError("Matrix payload missing expected array field")
+
+
+def _matrix_to_file_response(
+    payload: Dict[str, Any],
+    *,
+    as_file: bool,
+    stem: str,
+    description: str,
+) -> ToolResult | Dict[str, Any]:
+    """Return either the JSON payload or a file-backed ToolResult."""
+    if not as_file:
+        return payload
+
+    key, matrix_values = _detect_matrix_field(payload)
+    matrix_array = np.asarray(matrix_values, dtype=np.float32)
+
+    MATRIX_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{stem}_{uuid4().hex}.npy"
+    path = MATRIX_STORAGE_DIR / filename
+    np.save(path, matrix_array)
+
+    stats = {
+        "shape": list(matrix_array.shape),
+        "dtype": str(matrix_array.dtype),
+        "min": float(np.min(matrix_array)) if matrix_array.size else 0.0,
+        "max": float(np.max(matrix_array)) if matrix_array.size else 0.0,
+        "mean": float(np.mean(matrix_array)) if matrix_array.size else 0.0,
+    }
+
+    metadata = {k: v for k, v in payload.items() if k != key}
+
+    return ToolResult(
+        content=[File(path=path)],
+        structured_content={
+            "matrix_key": key,
+            "matrix_stats": stats,
+            "metadata": metadata,
+            "local_path": str(path),
+            "description": description,
+        },
+    )
 
 
 async def _collect_tool_names() -> List[str]:
@@ -212,10 +280,20 @@ async def get_ndwi_tiff(
 @mcp.tool()
 async def get_ndwi_matrix(
     bbox: list[float], from_date: str, to_date: str,
-    width: int = 256, height: int = 256, force_http: bool = False
-) -> dict:
-    """Gets a JSON matrix of the Normalized Difference Water Index (NDWI)."""
-    return await fetch_ndwi_matrix(bbox=bbox, from_date=from_date, to_date=to_date, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
+    width: int = 256, height: int = 256, force_http: bool = False,
+    as_file: bool = False,
+) -> ToolResult | dict:
+    """Gets NDWI as JSON matrix or NumPy file when `as_file` is true."""
+    payload = await fetch_ndwi_matrix(
+        bbox=bbox, from_date=from_date, to_date=to_date,
+        width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http,
+    )
+    return _matrix_to_file_response(
+        payload,
+        as_file=as_file,
+        stem="ndwi",
+        description="NDWI float32 matrix saved as NumPy .npy file.",
+    )
 
 @mcp.tool()
 async def get_ndbi_png(
@@ -238,10 +316,20 @@ async def get_ndbi_tiff(
 @mcp.tool()
 async def get_ndbi_matrix(
     bbox: list[float], from_date: str, to_date: str,
-    width: int = 256, height: int = 256, force_http: bool = False
-) -> dict:
-    """Gets a JSON matrix of the Normalized Difference Built-up Index (NDBI)."""
-    return await fetch_ndbi_matrix(bbox=bbox, from_date=from_date, to_date=to_date, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
+    width: int = 256, height: int = 256, force_http: bool = False,
+    as_file: bool = False,
+) -> ToolResult | dict:
+    """Gets NDBI as JSON matrix or NumPy file when `as_file` is true."""
+    payload = await fetch_ndbi_matrix(
+        bbox=bbox, from_date=from_date, to_date=to_date, width=width, height=height,
+        base_url=GEOMCP_BASE, force_http=force_http,
+    )
+    return _matrix_to_file_response(
+        payload,
+        as_file=as_file,
+        stem="ndbi",
+        description="NDBI float32 matrix saved as NumPy .npy file.",
+    )
 
 # ---------------------------------------------------------------------------
 # Cloud-free / Composites Tools
@@ -305,10 +393,19 @@ async def get_elevation_tiff(
 
 @mcp.tool()
 async def get_elevation_matrix(
-    bbox: list[float], width: int = 256, height: int = 256, force_http: bool = False
-) -> dict:
-    """Gets a JSON matrix of elevation values."""
-    return await fetch_elevation_matrix(bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
+    bbox: list[float], width: int = 256, height: int = 256,
+    force_http: bool = False, as_file: bool = False,
+) -> ToolResult | dict:
+    """Gets elevation as JSON matrix or NumPy file when `as_file` is true."""
+    payload = await fetch_elevation_matrix(
+        bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http,
+    )
+    return _matrix_to_file_response(
+        payload,
+        as_file=as_file,
+        stem="elevation",
+        description="Elevation (meters) matrix saved as NumPy .npy file.",
+    )
 
 @mcp.tool()
 async def get_slope_png(
@@ -328,10 +425,19 @@ async def get_slope_tiff(
 
 @mcp.tool()
 async def get_slope_matrix(
-    bbox: list[float], width: int = 256, height: int = 256, force_http: bool = False
-) -> dict:
-    """Gets a JSON matrix of terrain slope in degrees."""
-    return await fetch_slope_matrix(bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
+    bbox: list[float], width: int = 256, height: int = 256,
+    force_http: bool = False, as_file: bool = False,
+) -> ToolResult | dict:
+    """Gets slope as JSON matrix or NumPy file when `as_file` is true."""
+    payload = await fetch_slope_matrix(
+        bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http,
+    )
+    return _matrix_to_file_response(
+        payload,
+        as_file=as_file,
+        stem="slope",
+        description="Slope (degrees) matrix saved as NumPy .npy file.",
+    )
 
 @mcp.tool()
 async def get_aspect_tiff(
@@ -343,10 +449,19 @@ async def get_aspect_tiff(
 
 @mcp.tool()
 async def get_aspect_matrix(
-    bbox: list[float], width: int = 256, height: int = 256, force_http: bool = False
-) -> dict:
-    """Gets a JSON matrix of terrain aspect in degrees."""
-    return await fetch_aspect_matrix(bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
+    bbox: list[float], width: int = 256, height: int = 256,
+    force_http: bool = False, as_file: bool = False,
+) -> ToolResult | dict:
+    """Gets aspect as JSON matrix or NumPy file when `as_file` is true."""
+    payload = await fetch_aspect_matrix(
+        bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http,
+    )
+    return _matrix_to_file_response(
+        payload,
+        as_file=as_file,
+        stem="aspect",
+        description="Aspect (degrees clockwise from north) matrix saved as NumPy .npy file.",
+    )
 
 @mcp.tool()
 async def get_hillshade_png(
@@ -369,10 +484,21 @@ async def get_hillshade_tiff(
 @mcp.tool()
 async def get_hillshade_matrix(
     bbox: list[float], width: int = 256, height: int = 256,
-    azimuth_deg: float = 315.0, altitude_deg: float = 45.0, force_http: bool = False
-) -> dict:
-    """Gets a JSON matrix of the hillshade calculation."""
-    return await fetch_hillshade_matrix(bbox=bbox, width=width, height=height, azimuth_deg=azimuth_deg, altitude_deg=altitude_deg, base_url=GEOMCP_BASE, force_http=force_http)
+    azimuth_deg: float = 315.0, altitude_deg: float = 45.0,
+    force_http: bool = False, as_file: bool = False,
+) -> ToolResult | dict:
+    """Gets hillshade as JSON matrix or NumPy file when `as_file` is true."""
+    payload = await fetch_hillshade_matrix(
+        bbox=bbox, width=width, height=height,
+        azimuth_deg=azimuth_deg, altitude_deg=altitude_deg,
+        base_url=GEOMCP_BASE, force_http=force_http,
+    )
+    return _matrix_to_file_response(
+        payload,
+        as_file=as_file,
+        stem="hillshade",
+        description="Hillshade (0-1) matrix saved as NumPy .npy file.",
+    )
 
 # ---------------------------------------------------------------------------
 # Hydrology Tools
@@ -396,10 +522,19 @@ async def get_flow_accumulation_tiff(
 
 @mcp.tool()
 async def get_flow_accumulation_matrix(
-    bbox: list[float], width: int = 256, height: int = 256, force_http: bool = False
-) -> dict:
-    """Gets a JSON matrix of hydrological flow accumulation."""
-    return await fetch_flow_accumulation_matrix(bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
+    bbox: list[float], width: int = 256, height: int = 256,
+    force_http: bool = False, as_file: bool = False,
+) -> ToolResult | dict:
+    """Gets flow accumulation as JSON matrix or NumPy file when `as_file` is true."""
+    payload = await fetch_flow_accumulation_matrix(
+        bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http,
+    )
+    return _matrix_to_file_response(
+        payload,
+        as_file=as_file,
+        stem="flow_accumulation",
+        description="Log-scaled flow accumulation matrix saved as NumPy .npy file.",
+    )
 
 # ---------------------------------------------------------------------------
 # Classification Tools

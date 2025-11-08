@@ -16,3 +16,4 @@ rich
 python-multipart
 httpx
 fastmcp
+websockets-sansio

@@ -2,11 +2,16 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import List
 import io
+import json
+import math
+
+import httpx
 import numpy as np
 from PIL import Image
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
-import math
+
+from chat_service import ChatRequest, ChatService
 
 from modules.zonal import (
     zonal_stats_index,
@@ -84,10 +89,53 @@ from modules.status import get_status
 
 app = FastAPI(title="GeoMCP - Satellite MCP Server")
 
+# --- Chat Streaming Endpoint -------------------------------------------------
+
+@app.post("/chat_streaming")
+async def chat_streaming(request: ChatRequest):
+    """Streaming chat endpoint with optional MCP tool support."""
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get("https://openrouter.ai/api/v1/models")
+            response.raise_for_status()
+            models_payload = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to load OpenRouter models: {exc}")
+
+    all_models = models_payload.get("data", []) if isinstance(models_payload, dict) else []
+    model_data = next((m for m in all_models if m.get("id") == request.model_id), None)
+    if not model_data:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    chat_service = ChatService(request.model_id, model_data)
+    messages = chat_service.prepare_messages(request.chat_history)
+    has_pdf = any(msg.pdf for msg in request.chat_history)
+
+    payload = await chat_service.create_payload(
+        messages,
+        use_mcp=request.use_mcp,
+        has_pdf=has_pdf,
+    )
+
+    async def event_generator():
+        accumulated = json.loads(json.dumps(request.approved_tool_calls))
+        try:
+            async for event in chat_service.stream_response(
+                payload,
+                use_mcp=request.use_mcp,
+                mcp_auto_approve=request.mcp_auto_approve,
+                accumulated_tool_calls=accumulated,
+            ):
+                yield (json.dumps(event) + "\n").encode("utf-8")
+        except Exception as exc:
+            yield (json.dumps({"error": str(exc)}) + "\n").encode("utf-8")
+
+    return StreamingResponse(event_generator(), media_type="application/stream+json")
+
 # --- Add to server.py (helpers for zonal parsers) ----------------------------
 from fastapi import Request
 from typing import Dict, Any, Optional, List
-import json
 
 _ALLOWED_INDICES = {"NDVI", "NDWI", "NDBI"}
 

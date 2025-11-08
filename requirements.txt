@@ -14,3 +14,5 @@ shapely
 pyproj
 rich
 python-multipart
+httpx
+fastmcp

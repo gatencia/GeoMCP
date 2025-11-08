@@ -55,6 +55,9 @@ SUPPORTED = {
     "NDBI": "ndbi",
     "NDMI": "ndmi",
     "EVI":  "evi",
+    "NDRE": "ndre",
+    "MSAVI": "msavi",
+    "NBR": "nbr",
     # RAW:* will be handled dynamically (e.g., RAW:B08)
 }
 
@@ -82,6 +85,12 @@ def _evalscript_for_index(index_name: str, cloud_mask: bool = True, composite: b
         idx_expr = "(s.B8A - s.B11) / (s.B8A + s.B11 + 1e-6)"
     elif name == "EVI":
         idx_expr = "2.5 * (s.B08 - s.B04) / (s.B08 + 6.0*s.B04 - 7.5*s.B02 + 1.0 + 1e-6)"
+    elif name == "NDRE":
+        idx_expr = "(s.B8A - s.B05) / (s.B8A + s.B05 + 1e-6)"
+    elif name == "MSAVI":
+        idx_expr = "( (2.0*s.B08 + 1.0) - Math.sqrt(Math.max(0.0, Math.pow(2.0*s.B08 + 1.0, 2) - 8.0*(s.B08 - s.B04)))) / 2.0"
+    elif name == "NBR":
+        idx_expr = "(s.B08 - s.B12) / (s.B08 + s.B12 + 1e-6)"
     elif name.startswith("RAW:"):
         band = name.split(":", 1)[1].strip().upper()  # e.g., RAW:B08
         if f"\"{band}\"" not in inputs:

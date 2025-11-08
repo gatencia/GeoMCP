@@ -56,6 +56,13 @@ from modules.ndbi import (
     get_ndbi_matrix,
 )
 
+from modules.indices import (
+    get_ndre_matrix,
+    get_evi_matrix,
+    get_msavi_matrix,
+    get_nbr_matrix,
+)
+
 # Elevation + derivatives (now with PNG / TIFF / MATRIX helpers)
 from modules.elevation import (
     get_elevation,
@@ -137,7 +144,7 @@ async def chat_streaming(request: ChatRequest):
 from fastapi import Request
 from typing import Dict, Any, Optional, List
 
-_ALLOWED_INDICES = {"NDVI", "NDWI", "NDBI"}
+_ALLOWED_INDICES = {"NDVI", "NDWI", "NDBI", "NDRE", "EVI", "MSAVI", "NBR"}
 
 def _coerce_bbox(x: Any) -> Optional[List[float]]:
     if x is None:
@@ -237,6 +244,24 @@ def _parse_bbox(bbox: str) -> List[float]:
         return vals
     except Exception:
         raise HTTPException(status_code=400, detail="bbox must be 'minLon,minLat,maxLon,maxLat'")
+
+
+def _validate_bbox_list(bbox: List[float]) -> List[float]:
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        raise HTTPException(status_code=400, detail="bbox must be a 4-item list")
+    try:
+        return [float(v) for v in bbox]
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid bbox values: {exc}")
+
+
+class IndexMatrixRequest(BaseModel):
+    bbox: List[float]
+    from_date: Optional[str] = None
+    to_date: Optional[str] = None
+    width: int = 256
+    height: int = 256
+    maxcc: int = 20
 
 @app.get("/ndvi.png")
 def ndvi_png(
@@ -353,6 +378,44 @@ def ndwi_matrix(bbox: str, width: int = 256, height: int = 256):
         return JSONResponse(payload)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _run_index_matrix(func, body: IndexMatrixRequest) -> JSONResponse:
+    bb = _validate_bbox_list(body.bbox)
+    try:
+        payload = func(
+            bbox=bb,
+            width=int(body.width),
+            height=int(body.height),
+            from_iso=body.from_date,
+            to_iso=body.to_date,
+            maxcc=int(body.maxcc),
+        )
+        return JSONResponse(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/ndre.matrix")
+def ndre_matrix(body: IndexMatrixRequest):
+    return _run_index_matrix(get_ndre_matrix, body)
+
+
+@app.post("/evi.matrix")
+def evi_matrix(body: IndexMatrixRequest):
+    return _run_index_matrix(get_evi_matrix, body)
+
+
+@app.post("/msavi.matrix")
+def msavi_matrix(body: IndexMatrixRequest):
+    return _run_index_matrix(get_msavi_matrix, body)
+
+
+@app.post("/nbr.matrix")
+def nbr_matrix(body: IndexMatrixRequest):
+    return _run_index_matrix(get_nbr_matrix, body)
 
 
 @app.get("/hillshade.png")

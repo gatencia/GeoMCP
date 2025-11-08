@@ -44,9 +44,19 @@ except ImportError:
     ndwi_mod = None
 
 try:
+    from modules import ndvi as ndvi_mod
+except ImportError:
+    ndvi_mod = None
+
+try:
     from modules import ndbi as ndbi_mod
 except ImportError:
     ndbi_mod = None
+
+try:
+    from modules import indices as indices_mod
+except ImportError:
+    indices_mod = None
 
 try:
     from modules import classification as classification_mod
@@ -155,30 +165,98 @@ async def fetch_ndvi_png(
     }
     return await http_get_bytes("/ndvi.png", params, base_url, force_http)
 
+
+async def fetch_ndvi_matrix(
+    *,
+    bbox: List[float],
+    from_date: str,
+    to_date: str,
+    width: int,
+    height: int,
+    maxcc: int,
+    base_url: str,
+    force_http: bool,
+) -> Dict[str, Any]:
+    if ndvi_mod and hasattr(ndvi_mod, "get_ndvi_matrix") and not force_http:
+        ensure_sentinel_token()
+        return ndvi_mod.get_ndvi_matrix(
+            bbox=bbox,
+            width=width,
+            height=height,
+            from_iso=from_date,
+            to_iso=to_date,
+            maxcc=maxcc,
+        )
+    payload = {
+        "bbox": bbox,
+        "from_date": from_date,
+        "to_date": to_date,
+        "width": width,
+        "height": height,
+        "maxcc": maxcc,
+    }
+    return await http_post_json("/ndvi.matrix", payload, base_url, force_http)
+
 async def fetch_ndwi_png(
     *, bbox: List[float], from_date: str, to_date: str, width: int, height: int,
     base_url: str, force_http: bool
 ) -> bytes:
     if ndwi_mod and hasattr(ndwi_mod, "get_ndwi") and not force_http:
         ensure_sentinel_token()
-        # Assuming get_ndwi takes from_date/to_date, which it should.
-        # If not, this local call needs adjustment.
-        return ndwi_mod.get_ndwi(bbox=bbox, width=width, height=height)
+        return ndwi_mod.get_ndwi(
+            bbox=bbox,
+            width=width,
+            height=height,
+            from_iso=from_date,
+            to_iso=to_date,
+        )
     params = {"bbox": ",".join(map(str, bbox)), "from": from_date, "to": to_date, "width": width, "height": height}
     return await http_get_bytes("/ndwi.png", params, base_url, force_http)
 
-async def fetch_ndwi_tiff(*, bbox: List[float], from_date: str, to_date: str, width: int, height: int, base_url: str, force_http: bool) -> bytes:
+async def fetch_ndwi_tiff(
+    *, bbox: List[float], from_date: str, to_date: str, width: int, height: int, base_url: str, force_http: bool
+) -> bytes:
     if ndwi_mod and hasattr(ndwi_mod, "get_ndwi_raw") and not force_http:
         ensure_sentinel_token()
-        return ndwi_mod.get_ndwi_raw(bbox=bbox, width=width, height=height)
+        return ndwi_mod.get_ndwi_raw(
+            bbox=bbox,
+            width=width,
+            height=height,
+            from_iso=from_date,
+            to_iso=to_date,
+        )
     params = {"bbox": ",".join(map(str, bbox)), "from": from_date, "to": to_date, "width": width, "height": height}
     return await http_get_bytes("/ndwi.tif", params, base_url, force_http) # Assumes /ndwi.tif route
 
-async def fetch_ndwi_matrix(*, bbox: List[float], from_date: str, to_date: str, width: int, height: int, base_url: str, force_http: bool) -> Dict[str, Any]:
+async def fetch_ndwi_matrix(
+    *,
+    bbox: List[float],
+    from_date: str,
+    to_date: str,
+    width: int,
+    height: int,
+    maxcc: int,
+    base_url: str,
+    force_http: bool,
+) -> Dict[str, Any]:
     if ndwi_mod and hasattr(ndwi_mod, "get_ndwi_matrix") and not force_http:
         ensure_sentinel_token()
-        return ndwi_mod.get_ndwi_matrix(bbox=bbox, width=width, height=height)
-    params = {"bbox": ",".join(map(str, bbox)), "from": from_date, "to": to_date, "width": width, "height": height}
+        return ndwi_mod.get_ndwi_matrix(
+            bbox=bbox,
+            width=width,
+            height=height,
+            from_iso=from_date,
+            to_iso=to_date,
+            maxcc=maxcc,
+        )
+    params = {
+        "bbox": ",".join(map(str, bbox)),
+        "from": from_date,
+        "to": to_date,
+        "width": width,
+        "height": height,
+        "maxcc": maxcc,
+    }
     # This should be a POST or GET returning JSON, guessing GET returning JSON
     url = f"{base_url}/ndwi.matrix"
     async with httpx.AsyncClient() as client:
@@ -186,26 +264,194 @@ async def fetch_ndwi_matrix(*, bbox: List[float], from_date: str, to_date: str, 
         r.raise_for_status()
         return r.json()
 
-async def fetch_ndbi_png(*, bbox: List[float], from_date: str, to_date: str, width: int, height: int, base_url: str, force_http: bool) -> bytes:
+async def fetch_ndbi_png(
+    *, bbox: List[float], from_date: str, to_date: str, width: int, height: int, base_url: str, force_http: bool
+) -> bytes:
     if ndbi_mod and hasattr(ndbi_mod, "get_ndbi_png") and not force_http:
         ensure_sentinel_token()
-        return ndbi_mod.get_ndbi_png(bbox=bbox, from_iso=from_date, to_iso=to_date, width=width, height=height)
+        return ndbi_mod.get_ndbi_png(
+            bbox=bbox,
+            from_iso=from_date,
+            to_iso=to_date,
+            width=width,
+            height=height,
+        )
     params = {"bbox": ",".join(map(str, bbox)), "from_date": from_date, "to_date": to_date, "width": width, "height": height}
     return await http_get_bytes("/ndbi.png", params, base_url, force_http)
 
-async def fetch_ndbi_tiff(*, bbox: List[float], from_date: str, to_date: str, width: int, height: int, base_url: str, force_http: bool) -> bytes:
+async def fetch_ndbi_tiff(
+    *, bbox: List[float], from_date: str, to_date: str, width: int, height: int, base_url: str, force_http: bool
+) -> bytes:
     if ndbi_mod and hasattr(ndbi_mod, "get_ndbi_tiff") and not force_http:
         ensure_sentinel_token()
-        return ndbi_mod.get_ndbi_tiff(bbox=bbox, from_iso=from_date, to_iso=to_date, width=width, height=height)
+        return ndbi_mod.get_ndbi_tiff(
+            bbox=bbox,
+            from_iso=from_date,
+            to_iso=to_date,
+            width=width,
+            height=height,
+        )
     params = {"bbox": ",".join(map(str, bbox)), "from_date": from_date, "to_date": to_date, "width": width, "height": height}
     return await http_get_bytes("/ndbi.tif", params, base_url, force_http)
 
-async def fetch_ndbi_matrix(*, bbox: List[float], from_date: str, to_date: str, width: int, height: int, base_url: str, force_http: bool) -> Dict[str, Any]:
+async def fetch_ndbi_matrix(
+    *,
+    bbox: List[float],
+    from_date: str,
+    to_date: str,
+    width: int,
+    height: int,
+    maxcc: int,
+    base_url: str,
+    force_http: bool,
+) -> Dict[str, Any]:
     if ndbi_mod and hasattr(ndbi_mod, "get_ndbi_matrix") and not force_http:
         ensure_sentinel_token()
-        return ndbi_mod.get_ndbi_matrix(bbox=bbox, from_iso=from_date, to_iso=to_date, width=width, height=height)
-    payload = {"bbox": bbox, "from_date": from_date, "to_date": to_date, "width": width, "height": height}
+        return ndbi_mod.get_ndbi_matrix(
+            bbox=bbox,
+            from_iso=from_date,
+            to_iso=to_date,
+            width=width,
+            height=height,
+            maxcc=maxcc,
+        )
+    payload = {
+        "bbox": bbox,
+        "from_date": from_date,
+        "to_date": to_date,
+        "width": width,
+        "height": height,
+        "maxcc": maxcc,
+    }
     return await http_post_json("/ndbi.matrix", payload, base_url, force_http)
+
+
+async def fetch_ndre_matrix(
+    *,
+    bbox: List[float],
+    from_date: str,
+    to_date: str,
+    width: int,
+    height: int,
+    maxcc: int,
+    base_url: str,
+    force_http: bool,
+) -> Dict[str, Any]:
+    if indices_mod and hasattr(indices_mod, "get_ndre_matrix") and not force_http:
+        ensure_sentinel_token()
+        return indices_mod.get_ndre_matrix(
+            bbox=bbox,
+            width=width,
+            height=height,
+            from_iso=from_date,
+            to_iso=to_date,
+            maxcc=maxcc,
+        )
+    payload = {
+        "bbox": bbox,
+        "from_date": from_date,
+        "to_date": to_date,
+        "width": width,
+        "height": height,
+        "maxcc": maxcc,
+    }
+    return await http_post_json("/ndre.matrix", payload, base_url, force_http)
+
+
+async def fetch_evi_matrix(
+    *,
+    bbox: List[float],
+    from_date: str,
+    to_date: str,
+    width: int,
+    height: int,
+    maxcc: int,
+    base_url: str,
+    force_http: bool,
+) -> Dict[str, Any]:
+    if indices_mod and hasattr(indices_mod, "get_evi_matrix") and not force_http:
+        ensure_sentinel_token()
+        return indices_mod.get_evi_matrix(
+            bbox=bbox,
+            width=width,
+            height=height,
+            from_iso=from_date,
+            to_iso=to_date,
+            maxcc=maxcc,
+        )
+    payload = {
+        "bbox": bbox,
+        "from_date": from_date,
+        "to_date": to_date,
+        "width": width,
+        "height": height,
+        "maxcc": maxcc,
+    }
+    return await http_post_json("/evi.matrix", payload, base_url, force_http)
+
+
+async def fetch_msavi_matrix(
+    *,
+    bbox: List[float],
+    from_date: str,
+    to_date: str,
+    width: int,
+    height: int,
+    maxcc: int,
+    base_url: str,
+    force_http: bool,
+) -> Dict[str, Any]:
+    if indices_mod and hasattr(indices_mod, "get_msavi_matrix") and not force_http:
+        ensure_sentinel_token()
+        return indices_mod.get_msavi_matrix(
+            bbox=bbox,
+            width=width,
+            height=height,
+            from_iso=from_date,
+            to_iso=to_date,
+            maxcc=maxcc,
+        )
+    payload = {
+        "bbox": bbox,
+        "from_date": from_date,
+        "to_date": to_date,
+        "width": width,
+        "height": height,
+        "maxcc": maxcc,
+    }
+    return await http_post_json("/msavi.matrix", payload, base_url, force_http)
+
+
+async def fetch_nbr_matrix(
+    *,
+    bbox: List[float],
+    from_date: str,
+    to_date: str,
+    width: int,
+    height: int,
+    maxcc: int,
+    base_url: str,
+    force_http: bool,
+) -> Dict[str, Any]:
+    if indices_mod and hasattr(indices_mod, "get_nbr_matrix") and not force_http:
+        ensure_sentinel_token()
+        return indices_mod.get_nbr_matrix(
+            bbox=bbox,
+            width=width,
+            height=height,
+            from_iso=from_date,
+            to_iso=to_date,
+            maxcc=maxcc,
+        )
+    payload = {
+        "bbox": bbox,
+        "from_date": from_date,
+        "to_date": to_date,
+        "width": width,
+        "height": height,
+        "maxcc": maxcc,
+    }
+    return await http_post_json("/nbr.matrix", payload, base_url, force_http)
 
 # ---------------------------------------------------------------------------
 # Cloud-free Composite Adapters

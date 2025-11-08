@@ -65,17 +65,23 @@ def _normalize_iso(date_str: Optional[str], *, is_end: bool = False) -> Optional
         return f"{date_str}T23:59:59Z" if is_end else f"{date_str}T00:00:00Z"
     return date_str
 
-def _build_input_data(from_iso: Optional[str], to_iso: Optional[str]) -> List[Dict[str, Any]]:
-    """Build the 'data' array for Sentinel Hub Process body with optional normalized time range."""
-    data_obj: Dict[str, Any] = {"type": "S2L2A"}
+def _build_input_data(
+    from_iso: Optional[str],
+    to_iso: Optional[str],
+    maxcc: Optional[int],
+) -> List[Dict[str, Any]]:
+    """Construct Sentinel Hub data filter with cloud-masking preferences."""
+    data_filter: Dict[str, Any] = {"mosaickingOrder": "leastCC"}
+
+    if maxcc is not None:
+        data_filter["maxCloudCoverage"] = int(maxcc)
+
     f = _normalize_iso(from_iso, is_end=False)
-    t = _normalize_iso(to_iso,   is_end=True)
+    t = _normalize_iso(to_iso, is_end=True)
     if f and t:
-        data_obj["dataFilter"] = {
-            "timeRange": {"from": f, "to": t},
-            "mosaickingOrder": "mostRecent"
-        }
-    return [data_obj]
+        data_filter["timeRange"] = {"from": f, "to": t}
+
+    return [{"type": "S2L2A", "dataFilter": data_filter}]
 
 def _process(
     bbox: List[float],
@@ -84,7 +90,8 @@ def _process(
     evalscript: str,
     from_iso: Optional[str],
     to_iso: Optional[str],
-    out_type: str  # "image/tiff" or "image/png"
+    out_type: str,  # "image/tiff" or "image/png"
+    maxcc: Optional[int],
 ) -> bytes:
     headers = {"Authorization": f"Bearer {_get_token()}"}
     body = {
@@ -93,7 +100,7 @@ def _process(
                 "bbox": bbox,
                 "properties": {"crs": "http://www.opengis.net/def/crs/EPSG/0/4326"}
             },
-            "data": _build_input_data(from_iso, to_iso)
+            "data": _build_input_data(from_iso, to_iso, maxcc)
         },
         "output": {
             "width": width,
@@ -115,6 +122,7 @@ def get_ndbi_png(
     height: int = 512,
     from_iso: Optional[str] = None,
     to_iso: Optional[str] = None,
+    maxcc: Optional[int] = 20,
 ) -> bytes:
     """PNG visualization of NDBI (scaled to [0,1])."""
     return _process(
@@ -125,6 +133,7 @@ def get_ndbi_png(
         from_iso=from_iso,
         to_iso=to_iso,
         out_type="image/png",
+        maxcc=maxcc,
     )
 
 def get_ndbi_tiff(
@@ -133,6 +142,7 @@ def get_ndbi_tiff(
     height: int = 512,
     from_iso: Optional[str] = None,
     to_iso: Optional[str] = None,
+    maxcc: Optional[int] = 20,
 ) -> bytes:
     """Float32 GeoTIFF of raw NDBI values."""
     return _process(
@@ -143,6 +153,7 @@ def get_ndbi_tiff(
         from_iso=from_iso,
         to_iso=to_iso,
         out_type="image/tiff",
+        maxcc=maxcc,
     )
 
 def get_ndbi_matrix(
@@ -151,6 +162,7 @@ def get_ndbi_matrix(
     height: int = 256,
     from_iso: Optional[str] = None,
     to_iso: Optional[str] = None,
+    maxcc: Optional[int] = 20,
 ) -> Dict[str, Any]:
     """
     JSON float matrix of NDBI values:
@@ -161,12 +173,21 @@ def get_ndbi_matrix(
         "matrix": [[...], [...], ...]   // H x W float list
       }
     """
-    tiff_bytes = get_ndbi_tiff(bbox, width=width, height=height, from_iso=from_iso, to_iso=to_iso)
+    tiff_bytes = get_ndbi_tiff(
+        bbox,
+        width=width,
+        height=height,
+        from_iso=from_iso,
+        to_iso=to_iso,
+        maxcc=maxcc,
+    )
     arr = tifffile.imread(io.BytesIO(tiff_bytes)).astype(np.float32)
     arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
     return {
         "bbox": bbox,
         "width": int(arr.shape[1]),
         "height": int(arr.shape[0]),
-        "matrix": arr.tolist()
+        "matrix": arr.tolist(),
+        "max_cloud_coverage": int(maxcc) if maxcc is not None else None,
+        "time_range": {"from": from_iso, "to": to_iso},
     }

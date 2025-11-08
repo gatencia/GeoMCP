@@ -11,7 +11,7 @@ import base64
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypeAlias
 from uuid import uuid4
 
 import numpy as np
@@ -24,12 +24,17 @@ from mcp_adapters import (
     fetch_http_status,
     check_sentinel_token_local,
     fetch_ndvi_png,
+    fetch_ndvi_matrix,
     fetch_ndwi_png,
     fetch_ndwi_tiff,
     fetch_ndwi_matrix,
     fetch_ndbi_png,
     fetch_ndbi_tiff,
     fetch_ndbi_matrix,
+    fetch_ndre_matrix,
+    fetch_evi_matrix,
+    fetch_msavi_matrix,
+    fetch_nbr_matrix,
     fetch_cloudfree_truecolor_png,
     fetch_cloudfree_ndvi_png,
     fetch_cloudfree_ndwi_png,
@@ -57,8 +62,42 @@ from mcp_adapters import (
 # --- MCP Setup ---
 mcp = FastMCP("GeoMCP")
 
+# FastMCP 2.x no longer exposes `_tools`; add back for test-compatibility.
+if not hasattr(mcp, "_tools") and hasattr(mcp, "_tool_manager"):
+    tool_manager = getattr(mcp, "_tool_manager")
+    if hasattr(tool_manager, "_tools"):
+        mcp._tools = tool_manager._tools  # type: ignore[attr-defined]
+
 _DEFAULT_MATRIX_DIR = Path(__file__).resolve().parent / "tmp" / "matrix_cache"
 MATRIX_STORAGE_DIR = Path(os.environ.get("GEOMCP_MATRIX_DIR", _DEFAULT_MATRIX_DIR))
+
+BBoxInput: TypeAlias = Sequence[float] | Sequence[Sequence[float]]
+
+
+def _normalize_bbox(bbox: BBoxInput) -> list[float]:
+    """Accept [minLon, minLat, maxLon, maxLat] or [(minLon, minLat), (maxLon, maxLat)]."""
+
+    if len(bbox) == 4 and all(isinstance(value, (int, float)) for value in bbox):
+        return [float(value) for value in bbox]
+
+    if len(bbox) == 2:
+        first, second = bbox
+        if (
+            isinstance(first, (list, tuple))
+            and isinstance(second, (list, tuple))
+            and len(first) == len(second) == 2
+        ):
+            min_lon, min_lat = first
+            max_lon, max_lat = second
+            return [float(min_lon), float(min_lat), float(max_lon), float(max_lat)]
+
+    raise ValueError(
+        "bbox must be [minLon, minLat, maxLon, maxLat] or [(minLon, minLat), (maxLon, maxLat)]"
+    )
+
+
+def _normalize_optional_bbox(bbox: Optional[BBoxInput]) -> Optional[list[float]]:
+    return _normalize_bbox(bbox) if bbox is not None else None
 
 # ---------------------------------------------------------------------------
 # Helper for Image-Returning Tools
@@ -177,7 +216,7 @@ def _categorize_tools(tool_names: List[str]) -> Dict[str, List[str]]:
         )
 
     capabilities: Dict[str, List[str]] = {
-        "indices": _filter_by_keywords(("ndvi", "ndwi", "ndbi")),
+    "indices": _filter_by_keywords(("ndvi", "ndwi", "ndbi", "ndre", "evi", "msavi", "nbr")),
         "composites": _filter_by_keywords(("cloudfree",)),
         "terrain": _filter_by_keywords(("elevation", "slope", "aspect", "hillshade")),
         "hydrology": _filter_by_keywords(("flow",)),
@@ -214,8 +253,11 @@ async def health(force_http: bool = False) -> dict:
     local_sentinel_status = check_sentinel_token_local()
 
     capabilities = await _build_capability_summary()
+    status_ok = http_status.get("status") == "ok"
+
     return {
-        "status": "ok" if http_status.get("status") == "ok" else "degraded",
+        "status": "ok" if status_ok else "degraded",
+        "ok": status_ok,
         "local_sentinel_hub_auth": local_sentinel_status,
         "http_backend": http_status,
         "mcp_capabilities": capabilities,
@@ -237,7 +279,7 @@ async def list_capabilities() -> dict:
 
 @mcp.tool()
 async def get_ndvi_png(
-    bbox: list[float], from_date: str, to_date: str,
+    bbox: BBoxInput, from_date: str, to_date: str,
     width: int = 512, height: int = 512, collection: str = "S2L2A",
     force_http: bool = False
 ) -> dict:
@@ -253,6 +295,8 @@ async def get_ndvi_png(
     :param force_http: Force use of HTTP backend.
     :return: A dictionary containing the base64-encoded PNG image.
     """
+    bbox = _normalize_bbox(bbox)
+
     png_bytes = await fetch_ndvi_png(
         bbox=bbox, from_date=from_date, to_date=to_date, width=width, height=height,
         collection=collection, base_url=GEOMCP_BASE, force_http=force_http
@@ -260,33 +304,69 @@ async def get_ndvi_png(
     return _format_png_response(png_bytes, width, height)
 
 @mcp.tool()
+async def get_ndvi_matrix(
+    bbox: BBoxInput,
+    from_date: str,
+    to_date: str,
+    width: int = 256,
+    height: int = 256,
+    maxcc: int = 20,
+    force_http: bool = False,
+    as_file: bool = False,
+) -> ToolResult | dict:
+    """Gets NDVI as JSON matrix or NumPy file when `as_file` is true (cloud-filtered)."""
+    bbox = _normalize_bbox(bbox)
+
+    payload = await fetch_ndvi_matrix(
+        bbox=bbox,
+        from_date=from_date,
+        to_date=to_date,
+        width=width,
+        height=height,
+        maxcc=maxcc,
+        base_url=GEOMCP_BASE,
+        force_http=force_http,
+    )
+    return _matrix_to_file_response(
+        payload,
+        as_file=as_file,
+        stem="ndvi",
+        description="NDVI float32 matrix (cloud filtered) saved as NumPy .npy file.",
+    )
+
+@mcp.tool()
 async def get_ndwi_png(
-    bbox: list[float], from_date: str, to_date: str,
+    bbox: BBoxInput, from_date: str, to_date: str,
     width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Generates a PNG of the Normalized Difference Water Index (NDWI)."""
+    bbox = _normalize_bbox(bbox)
     png_bytes = await fetch_ndwi_png(bbox=bbox, from_date=from_date, to_date=to_date, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
     return _format_png_response(png_bytes, width, height)
 
 @mcp.tool()
 async def get_ndwi_tiff(
-    bbox: list[float], from_date: str, to_date: str,
+    bbox: BBoxInput, from_date: str, to_date: str,
     width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Gets a GeoTIFF of the Normalized Difference Water Index (NDWI)."""
+    bbox = _normalize_bbox(bbox)
     tiff_bytes = await fetch_ndwi_tiff(bbox=bbox, from_date=from_date, to_date=to_date, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
     return _format_tiff_response(tiff_bytes, "ndwi.tif")
 
 @mcp.tool()
 async def get_ndwi_matrix(
-    bbox: list[float], from_date: str, to_date: str,
-    width: int = 256, height: int = 256, force_http: bool = False,
-    as_file: bool = False,
+    bbox: BBoxInput, from_date: str, to_date: str,
+    width: int = 256, height: int = 256, maxcc: int = 20,
+    force_http: bool = False, as_file: bool = False,
 ) -> ToolResult | dict:
-    """Gets NDWI as JSON matrix or NumPy file when `as_file` is true."""
+    """Gets NDWI as JSON matrix or NumPy file when `as_file` is true (cloud filtered)."""
+    bbox = _normalize_bbox(bbox)
+
     payload = await fetch_ndwi_matrix(
         bbox=bbox, from_date=from_date, to_date=to_date,
-        width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http,
+        width=width, height=height, maxcc=maxcc,
+        base_url=GEOMCP_BASE, force_http=force_http,
     )
     return _matrix_to_file_response(
         payload,
@@ -297,31 +377,36 @@ async def get_ndwi_matrix(
 
 @mcp.tool()
 async def get_ndbi_png(
-    bbox: list[float], from_date: str, to_date: str,
+    bbox: BBoxInput, from_date: str, to_date: str,
     width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Generates a PNG of the Normalized Difference Built-up Index (NDBI)."""
+    bbox = _normalize_bbox(bbox)
     png_bytes = await fetch_ndbi_png(bbox=bbox, from_date=from_date, to_date=to_date, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
     return _format_png_response(png_bytes, width, height)
 
 @mcp.tool()
 async def get_ndbi_tiff(
-    bbox: list[float], from_date: str, to_date: str,
+    bbox: BBoxInput, from_date: str, to_date: str,
     width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Gets a GeoTIFF of the Normalized Difference Built-up Index (NDBI)."""
+    bbox = _normalize_bbox(bbox)
     tiff_bytes = await fetch_ndbi_tiff(bbox=bbox, from_date=from_date, to_date=to_date, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
     return _format_tiff_response(tiff_bytes, "ndbi.tif")
 
 @mcp.tool()
 async def get_ndbi_matrix(
-    bbox: list[float], from_date: str, to_date: str,
-    width: int = 256, height: int = 256, force_http: bool = False,
-    as_file: bool = False,
+    bbox: BBoxInput, from_date: str, to_date: str,
+    width: int = 256, height: int = 256, maxcc: int = 20,
+    force_http: bool = False, as_file: bool = False,
 ) -> ToolResult | dict:
-    """Gets NDBI as JSON matrix or NumPy file when `as_file` is true."""
+    """Gets NDBI as JSON matrix or NumPy file when `as_file` is true (cloud filtered)."""
+    bbox = _normalize_bbox(bbox)
+
     payload = await fetch_ndbi_matrix(
-        bbox=bbox, from_date=from_date, to_date=to_date, width=width, height=height,
+        bbox=bbox, from_date=from_date, to_date=to_date,
+        width=width, height=height, maxcc=maxcc,
         base_url=GEOMCP_BASE, force_http=force_http,
     )
     return _matrix_to_file_response(
@@ -331,16 +416,145 @@ async def get_ndbi_matrix(
         description="NDBI float32 matrix saved as NumPy .npy file.",
     )
 
+
+@mcp.tool()
+async def get_ndre_matrix(
+    bbox: BBoxInput,
+    from_date: str,
+    to_date: str,
+    width: int = 256,
+    height: int = 256,
+    maxcc: int = 20,
+    force_http: bool = False,
+    as_file: bool = False,
+) -> ToolResult | dict:
+    """Gets NDRE as JSON matrix or NumPy file when `as_file` is true (cloud filtered)."""
+    bbox = _normalize_bbox(bbox)
+
+    payload = await fetch_ndre_matrix(
+        bbox=bbox,
+        from_date=from_date,
+        to_date=to_date,
+        width=width,
+        height=height,
+        maxcc=maxcc,
+        base_url=GEOMCP_BASE,
+        force_http=force_http,
+    )
+    return _matrix_to_file_response(
+        payload,
+        as_file=as_file,
+        stem="ndre",
+        description="NDRE float32 matrix (cloud filtered) saved as NumPy .npy file.",
+    )
+
+
+@mcp.tool()
+async def get_evi_matrix(
+    bbox: BBoxInput,
+    from_date: str,
+    to_date: str,
+    width: int = 256,
+    height: int = 256,
+    maxcc: int = 20,
+    force_http: bool = False,
+    as_file: bool = False,
+) -> ToolResult | dict:
+    """Gets EVI as JSON matrix or NumPy file when `as_file` is true (cloud filtered)."""
+    bbox = _normalize_bbox(bbox)
+
+    payload = await fetch_evi_matrix(
+        bbox=bbox,
+        from_date=from_date,
+        to_date=to_date,
+        width=width,
+        height=height,
+        maxcc=maxcc,
+        base_url=GEOMCP_BASE,
+        force_http=force_http,
+    )
+    return _matrix_to_file_response(
+        payload,
+        as_file=as_file,
+        stem="evi",
+        description="EVI float32 matrix (cloud filtered) saved as NumPy .npy file.",
+    )
+
+
+@mcp.tool()
+async def get_msavi_matrix(
+    bbox: BBoxInput,
+    from_date: str,
+    to_date: str,
+    width: int = 256,
+    height: int = 256,
+    maxcc: int = 20,
+    force_http: bool = False,
+    as_file: bool = False,
+) -> ToolResult | dict:
+    """Gets MSAVI as JSON matrix or NumPy file when `as_file` is true (cloud filtered)."""
+    bbox = _normalize_bbox(bbox)
+
+    payload = await fetch_msavi_matrix(
+        bbox=bbox,
+        from_date=from_date,
+        to_date=to_date,
+        width=width,
+        height=height,
+        maxcc=maxcc,
+        base_url=GEOMCP_BASE,
+        force_http=force_http,
+    )
+    return _matrix_to_file_response(
+        payload,
+        as_file=as_file,
+        stem="msavi",
+        description="MSAVI float32 matrix (cloud filtered) saved as NumPy .npy file.",
+    )
+
+
+@mcp.tool()
+async def get_nbr_matrix(
+    bbox: BBoxInput,
+    from_date: str,
+    to_date: str,
+    width: int = 256,
+    height: int = 256,
+    maxcc: int = 20,
+    force_http: bool = False,
+    as_file: bool = False,
+) -> ToolResult | dict:
+    """Gets NBR as JSON matrix or NumPy file when `as_file` is true (cloud filtered)."""
+    bbox = _normalize_bbox(bbox)
+
+    payload = await fetch_nbr_matrix(
+        bbox=bbox,
+        from_date=from_date,
+        to_date=to_date,
+        width=width,
+        height=height,
+        maxcc=maxcc,
+        base_url=GEOMCP_BASE,
+        force_http=force_http,
+    )
+    return _matrix_to_file_response(
+        payload,
+        as_file=as_file,
+        stem="nbr",
+        description="NBR float32 matrix (cloud filtered) saved as NumPy .npy file.",
+    )
+
 # ---------------------------------------------------------------------------
 # Cloud-free / Composites Tools
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
 async def get_cloudfree_truecolor_png(
-    bbox: list[float], from_date: str, to_date: str, maxcc: int = 20,
+    bbox: BBoxInput, from_date: str, to_date: str, maxcc: int = 20,
     width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Generates a cloud-free true-color composite PNG."""
+    bbox = _normalize_bbox(bbox)
     png_bytes = await fetch_cloudfree_truecolor_png(
         bbox=bbox, from_date=from_date, to_date=to_date, maxcc=maxcc,
         width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http
@@ -349,10 +563,11 @@ async def get_cloudfree_truecolor_png(
 
 @mcp.tool()
 async def get_cloudfree_ndvi_png(
-    bbox: list[float], from_date: str, to_date: str, maxcc: int = 20,
+    bbox: BBoxInput, from_date: str, to_date: str, maxcc: int = 20,
     width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Generates a cloud-free NDVI composite PNG."""
+    bbox = _normalize_bbox(bbox)
     png_bytes = await fetch_cloudfree_ndvi_png(
         bbox=bbox, from_date=from_date, to_date=to_date, maxcc=maxcc,
         width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http
@@ -361,10 +576,11 @@ async def get_cloudfree_ndvi_png(
 
 @mcp.tool()
 async def get_cloudfree_ndwi_png(
-    bbox: list[float], from_date: str, to_date: str, maxcc: int = 20,
+    bbox: BBoxInput, from_date: str, to_date: str, maxcc: int = 20,
     width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Generates a cloud-free NDWI composite PNG."""
+    bbox = _normalize_bbox(bbox)
     png_bytes = await fetch_cloudfree_ndwi_png(
         bbox=bbox, from_date=from_date, to_date=to_date, maxcc=maxcc,
         width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http
@@ -377,26 +593,33 @@ async def get_cloudfree_ndwi_png(
 
 @mcp.tool()
 async def get_elevation_png(
-    bbox: list[float], width: int = 512, height: int = 512, force_http: bool = False
+    bbox: BBoxInput, width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Generates a grayscale PNG of a Digital Elevation Model (DEM)."""
-    png_bytes = await fetch_elevation_png(bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
+    bbox = _normalize_bbox(bbox)
+    png_bytes = await fetch_elevation_png(
+        bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http
+    )
     return _format_png_response(png_bytes, width, height)
 
 @mcp.tool()
 async def get_elevation_tiff(
-    bbox: list[float], width: int = 512, height: int = 512, force_http: bool = False
+    bbox: BBoxInput, width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Gets a raw float32 GeoTIFF of a Digital Elevation Model (DEM)."""
-    tiff_bytes = await fetch_elevation_tiff(bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
+    bbox = _normalize_bbox(bbox)
+    tiff_bytes = await fetch_elevation_tiff(
+        bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http
+    )
     return _format_tiff_response(tiff_bytes, "elevation.tif")
 
 @mcp.tool()
 async def get_elevation_matrix(
-    bbox: list[float], width: int = 256, height: int = 256,
+    bbox: BBoxInput, width: int = 256, height: int = 256,
     force_http: bool = False, as_file: bool = False,
 ) -> ToolResult | dict:
     """Gets elevation as JSON matrix or NumPy file when `as_file` is true."""
+    bbox = _normalize_bbox(bbox)
     payload = await fetch_elevation_matrix(
         bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http,
     )
@@ -409,26 +632,33 @@ async def get_elevation_matrix(
 
 @mcp.tool()
 async def get_slope_png(
-    bbox: list[float], width: int = 512, height: int = 512, vmax: float = 45.0, force_http: bool = False
+    bbox: BBoxInput, width: int = 512, height: int = 512, vmax: float = 45.0, force_http: bool = False
 ) -> dict:
     """Generates a PNG visualizing terrain slope in degrees."""
-    png_bytes = await fetch_slope_png(bbox=bbox, width=width, height=height, vmax=vmax, base_url=GEOMCP_BASE, force_http=force_http)
+    bbox = _normalize_bbox(bbox)
+    png_bytes = await fetch_slope_png(
+        bbox=bbox, width=width, height=height, vmax=vmax, base_url=GEOMCP_BASE, force_http=force_http
+    )
     return _format_png_response(png_bytes, width, height)
 
 @mcp.tool()
 async def get_slope_tiff(
-    bbox: list[float], width: int = 512, height: int = 512, force_http: bool = False
+    bbox: BBoxInput, width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Gets a GeoTIFF of terrain slope in degrees."""
-    tiff_bytes = await fetch_slope_tiff(bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
+    bbox = _normalize_bbox(bbox)
+    tiff_bytes = await fetch_slope_tiff(
+        bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http
+    )
     return _format_tiff_response(tiff_bytes, "slope.tif")
 
 @mcp.tool()
 async def get_slope_matrix(
-    bbox: list[float], width: int = 256, height: int = 256,
+    bbox: BBoxInput, width: int = 256, height: int = 256,
     force_http: bool = False, as_file: bool = False,
 ) -> ToolResult | dict:
     """Gets slope as JSON matrix or NumPy file when `as_file` is true."""
+    bbox = _normalize_bbox(bbox)
     payload = await fetch_slope_matrix(
         bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http,
     )
@@ -441,18 +671,22 @@ async def get_slope_matrix(
 
 @mcp.tool()
 async def get_aspect_tiff(
-    bbox: list[float], width: int = 512, height: int = 512, force_http: bool = False
+    bbox: BBoxInput, width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Gets a GeoTIFF of terrain aspect (direction) in degrees from North."""
-    tiff_bytes = await fetch_aspect_tiff(bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
+    bbox = _normalize_bbox(bbox)
+    tiff_bytes = await fetch_aspect_tiff(
+        bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http
+    )
     return _format_tiff_response(tiff_bytes, "aspect.tif")
 
 @mcp.tool()
 async def get_aspect_matrix(
-    bbox: list[float], width: int = 256, height: int = 256,
+    bbox: BBoxInput, width: int = 256, height: int = 256,
     force_http: bool = False, as_file: bool = False,
 ) -> ToolResult | dict:
     """Gets aspect as JSON matrix or NumPy file when `as_file` is true."""
+    bbox = _normalize_bbox(bbox)
     payload = await fetch_aspect_matrix(
         bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http,
     )
@@ -465,29 +699,38 @@ async def get_aspect_matrix(
 
 @mcp.tool()
 async def get_hillshade_png(
-    bbox: list[float], width: int = 512, height: int = 512,
+    bbox: BBoxInput, width: int = 512, height: int = 512,
     azimuth_deg: float = 315.0, altitude_deg: float = 45.0, force_http: bool = False
 ) -> dict:
     """Generates a hillshade visualization of the terrain."""
-    png_bytes = await fetch_hillshade_png(bbox=bbox, width=width, height=height, azimuth_deg=azimuth_deg, altitude_deg=altitude_deg, base_url=GEOMCP_BASE, force_http=force_http)
+    bbox = _normalize_bbox(bbox)
+    png_bytes = await fetch_hillshade_png(
+        bbox=bbox, width=width, height=height, azimuth_deg=azimuth_deg, altitude_deg=altitude_deg,
+        base_url=GEOMCP_BASE, force_http=force_http,
+    )
     return _format_png_response(png_bytes, width, height)
 
 @mcp.tool()
 async def get_hillshade_tiff(
-    bbox: list[float], width: int = 512, height: int = 512,
+    bbox: BBoxInput, width: int = 512, height: int = 512,
     azimuth_deg: float = 315.0, altitude_deg: float = 45.0, force_http: bool = False
 ) -> dict:
     """Gets a GeoTIFF of the hillshade calculation."""
-    tiff_bytes = await fetch_hillshade_tiff(bbox=bbox, width=width, height=height, azimuth_deg=azimuth_deg, altitude_deg=altitude_deg, base_url=GEOMCP_BASE, force_http=force_http)
+    bbox = _normalize_bbox(bbox)
+    tiff_bytes = await fetch_hillshade_tiff(
+        bbox=bbox, width=width, height=height, azimuth_deg=azimuth_deg, altitude_deg=altitude_deg,
+        base_url=GEOMCP_BASE, force_http=force_http,
+    )
     return _format_tiff_response(tiff_bytes, "hillshade.tif")
 
 @mcp.tool()
 async def get_hillshade_matrix(
-    bbox: list[float], width: int = 256, height: int = 256,
+    bbox: BBoxInput, width: int = 256, height: int = 256,
     azimuth_deg: float = 315.0, altitude_deg: float = 45.0,
     force_http: bool = False, as_file: bool = False,
 ) -> ToolResult | dict:
     """Gets hillshade as JSON matrix or NumPy file when `as_file` is true."""
+    bbox = _normalize_bbox(bbox)
     payload = await fetch_hillshade_matrix(
         bbox=bbox, width=width, height=height,
         azimuth_deg=azimuth_deg, altitude_deg=altitude_deg,
@@ -506,26 +749,29 @@ async def get_hillshade_matrix(
 
 @mcp.tool()
 async def get_flow_accumulation_png(
-    bbox: list[float], width: int = 512, height: int = 512, force_http: bool = False
+    bbox: BBoxInput, width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Generates a PNG visualizing hydrological flow accumulation (log-scaled)."""
+    bbox = _normalize_bbox(bbox)
     png_bytes = await fetch_flow_accumulation_png(bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
     return _format_png_response(png_bytes, width, height)
 
 @mcp.tool()
 async def get_flow_accumulation_tiff(
-    bbox: list[float], width: int = 512, height: int = 512, force_http: bool = False
+    bbox: BBoxInput, width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Gets a GeoTIFF of hydrological flow accumulation."""
+    bbox = _normalize_bbox(bbox)
     tiff_bytes = await fetch_flow_accumulation_tiff(bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
     return _format_tiff_response(tiff_bytes, "flow_accumulation.tif")
 
 @mcp.tool()
 async def get_flow_accumulation_matrix(
-    bbox: list[float], width: int = 256, height: int = 256,
+    bbox: BBoxInput, width: int = 256, height: int = 256,
     force_http: bool = False, as_file: bool = False,
 ) -> ToolResult | dict:
     """Gets flow accumulation as JSON matrix or NumPy file when `as_file` is true."""
+    bbox = _normalize_bbox(bbox)
     payload = await fetch_flow_accumulation_matrix(
         bbox=bbox, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http,
     )
@@ -542,16 +788,17 @@ async def get_flow_accumulation_matrix(
 
 @mcp.tool()
 async def run_unsupervised_classification_png(
-    bbox: list[float], from_date: str, to_date: str, k: int = 5,
+    bbox: BBoxInput, from_date: str, to_date: str, k: int = 5,
     width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Performs unsupervised classification (k-means) on satellite imagery and returns a PNG."""
+    bbox = _normalize_bbox(bbox)
     png_bytes = await fetch_unsupervised_classification_png(bbox=bbox, from_date=from_date, to_date=to_date, k=k, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
     return _format_png_response(png_bytes, width, height)
 
 @mcp.tool()
 async def run_supervised_classification_png(
-    bbox: list[float], from_date: str, to_date: str,
+    bbox: BBoxInput, from_date: str, to_date: str,
     training_points: List[Dict[str, Any]],
     width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
@@ -561,15 +808,17 @@ async def run_supervised_classification_png(
     :param training_points: A list of dictionaries, e.g.,
            [{"class": "water", "lat": 40.71, "lon": -74.0}, {"class": "urban", "lat": 40.72, "lon": -74.01}]
     """
+    bbox = _normalize_bbox(bbox)
     png_bytes = await fetch_supervised_classification_png(bbox=bbox, from_date=from_date, to_date=to_date, training_points=training_points, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
     return _format_png_response(png_bytes, width, height)
 
 @mcp.tool()
 async def run_rule_based_classification_png(
-    bbox: list[float], from_date: str, to_date: str,
+    bbox: BBoxInput, from_date: str, to_date: str,
     width: int = 512, height: int = 512, force_http: bool = False
 ) -> dict:
     """Performs rule-based land cover classification (Water, Vegetation, Barren) and returns a PNG."""
+    bbox = _normalize_bbox(bbox)
     png_bytes = await fetch_rule_based_classification_png(bbox=bbox, from_date=from_date, to_date=to_date, width=width, height=height, base_url=GEOMCP_BASE, force_http=force_http)
     return _format_png_response(png_bytes, width, height)
 
@@ -580,7 +829,7 @@ async def run_rule_based_classification_png(
 @mcp.tool()
 async def get_zonal_timeseries_json(
     index: str, from_date: str, to_date: str, step_days: int = 10,
-    geometry: Optional[dict] = None, bbox: Optional[list[float]] = None,
+    geometry: Optional[dict] = None, bbox: Optional[BBoxInput] = None,
     cloud_mask: bool = True, composite: bool = False, force_http: bool = False
 ) -> dict:
     """
@@ -591,19 +840,32 @@ async def get_zonal_timeseries_json(
     :param to_date: End date (YYYY-MM-DD).
     :param step_days: The interval in days for each time series data point.
     :param geometry: A GeoJSON-like dictionary defining the area of interest.
-    :param bbox: A bounding box [minLon, minLat, maxLon, maxLat] as an alternative to geometry.
+    :param bbox: A bounding box (list or tuple of [minLon, minLat, maxLon, maxLat]) as an alternative to geometry.
     :param cloud_mask: Whether to apply a cloud mask.
     :param composite: Whether to create a composite image for each step.
     :param force_http: Force use of HTTP backend.
     :return: A JSON object containing the time series data.
     """
-    if not geometry and not bbox:
+    normalized_bbox = _normalize_optional_bbox(bbox)
+
+    if not geometry and not normalized_bbox:
         raise ValueError("Either 'geometry' or 'bbox' must be provided.")
     return await fetch_zonal_timeseries(
         index=index, from_date=from_date, to_date=to_date, step_days=step_days,
-        geometry=geometry, bbox=bbox, cloud_mask=cloud_mask, composite=composite,
+        geometry=geometry, bbox=normalized_bbox, cloud_mask=cloud_mask, composite=composite,
         base_url=GEOMCP_BASE, force_http=force_http
     )
+
+
+def _ensure_tool_func_aliases() -> None:
+    """Provide backwards-compatible `.func` attribute exposed in tests."""
+    tools = getattr(mcp, "_tools", {})
+    for tool in tools.values():
+        if hasattr(tool, "fn") and not hasattr(tool, "func"):
+            object.__setattr__(tool, "func", tool.fn)  # type: ignore[attr-defined]
+
+
+_ensure_tool_func_aliases()
 
 @mcp.tool()
 async def get_point_timeseries_json(

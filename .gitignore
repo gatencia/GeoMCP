@@ -51,3 +51,6 @@ htmlcov/
 Tests/report.html
 Tests/__pycache__/
 *.pyc
+
+
+scripts/matrix_file_outputs

@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+numpy
+Pillow
+pydantic
+requests
+tifffile
+rasterio
+matplotlib
+scikit-learn
+geojson
+shapely
+pyproj
+rich
+python-multipart

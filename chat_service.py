@@ -8,7 +8,7 @@ import os
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional, Union
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from mcp_client import mcp_manager
 
@@ -23,8 +23,7 @@ class Message(BaseModel):
     pdf: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
 
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 
 class ChatRequest(BaseModel):

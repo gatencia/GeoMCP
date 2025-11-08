@@ -17,4 +17,4 @@ sleep 1
 
 echo "🚀 Starting new GeoMCP server..."
 source .venv/bin/activate
-uvicorn server:app --reload --port $PORT
+uvicorn server:app --reload --port $PORT --reload-exclude '.venv/*'
